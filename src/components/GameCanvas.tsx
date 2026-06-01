@@ -5,7 +5,7 @@ import { CHARACTERS, type CharacterDef, type CharacterId } from "@/game/characte
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader";
-
+ 
 type Stage = "preload" | "select" | "loading" | "playing";
 
 // ── Preload tất cả assets lần đầu ─────────────────────────────────────────
