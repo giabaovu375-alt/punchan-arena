@@ -1,15 +1,80 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { GameEngine } from "@/game/GameEngine";
 import { CharacterSelect } from "@/components/CharacterSelect";
 import { CHARACTERS, type CharacterDef, type CharacterId } from "@/game/characters";
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
+import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader";
 
-type Stage = "select" | "loading" | "playing";
+type Stage = "preload" | "select" | "loading" | "playing";
 
+// ── Preload tất cả assets lần đầu ─────────────────────────────────────────
+const ANIM_FILES = [
+  "/animation/Idle.fbx",
+  "/animation/Walking.fbx",
+  "/animation/Running.fbx",
+  "/animation/Jumping.fbx",
+  "/animation/Hook Punch.fbx",
+  "/animation/Kicking.fbx",
+  "/animation/Mma Kick.fbx",
+  "/animation/Drop Kick.fbx",
+  "/animation/Elbow Uppercut Combo.fbx",
+  "/animation/Uppercut Jab.fbx",
+  "/animation/Pain Gesture.fbx",
+  "/animation/Sitting.fbx",
+  "/animation/Sitting Idle.fbx",
+];
+
+async function preloadAllAssets(
+  onProgress: (pct: number, label: string) => void
+) {
+  const gltfLoader = new GLTFLoader();
+  const fbxLoader  = new FBXLoader();
+  const total = CHARACTERS.length + ANIM_FILES.length;
+  let done = 0;
+
+  const tick = (label: string) => {
+    done++;
+    onProgress(Math.round((done / total) * 100), label);
+  };
+
+  // Load models
+  const modelPromises = CHARACTERS.map((c) =>
+    new Promise<void>((res) => {
+      gltfLoader.load(c.modelUrl, () => { tick(c.name); res(); },
+        undefined, () => { tick(c.name + " (lỗi)"); res(); });
+    })
+  );
+
+  // Load animations
+  const animPromises = ANIM_FILES.map((f) => {
+    const name = f.split("/").pop()?.replace(".fbx", "") ?? f;
+    return new Promise<void>((res) => {
+      fbxLoader.load(f, () => { tick(name); res(); },
+        undefined, () => { tick(name + " (lỗi)"); res(); });
+    });
+  });
+
+  await Promise.all([...modelPromises, ...animPromises]);
+}
+
+// ── Main component ─────────────────────────────────────────────────────────
 export function GameCanvas() {
-  const [stage, setStage] = useState<Stage>("select");
+  const [stage, setStage]       = useState<Stage>("preload");
   const [selectedId, setSelectedId] = useState<CharacterId | null>(null);
+  const [preloadPct, setPreloadPct] = useState(0);
+  const [preloadLabel, setPreloadLabel] = useState("Đang khởi động...");
   const ref = useRef<HTMLDivElement>(null);
 
+  // Preload lần đầu
+  useEffect(() => {
+    preloadAllAssets((pct, label) => {
+      setPreloadPct(pct);
+      setPreloadLabel(label);
+    }).then(() => setStage("select"));
+  }, []);
+
+  // Mount engine
   useEffect(() => {
     if (stage !== "playing" || !ref.current || !selectedId) return;
     const char = CHARACTERS.find((c) => c.id === selectedId)!;
@@ -22,6 +87,10 @@ export function GameCanvas() {
     setStage("loading");
     setTimeout(() => setStage("playing"), 1200);
   };
+
+  if (stage === "preload") {
+    return <PreloadScreen pct={preloadPct} label={preloadLabel} />;
+  }
 
   if (stage === "select") {
     return <CharacterSelect onConfirm={handleSelect} />;
@@ -41,6 +110,138 @@ export function GameCanvas() {
   );
 }
 
+// ── Preload Screen ─────────────────────────────────────────────────────────
+function PreloadScreen({ pct, label }: { pct: number; label: string }) {
+  return (
+    <div style={{
+      position: "fixed", inset: 0,
+      background: "#060810",
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      fontFamily: "'Segoe UI', sans-serif",
+      gap: 0,
+    }}>
+      {/* Background radial */}
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "radial-gradient(ellipse at 50% 50%, #0d1535 0%, #060810 70%)",
+      }} />
+
+      {/* Grid */}
+      <div style={{
+        position: "absolute", inset: 0,
+        backgroundImage: `linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                          linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)`,
+        backgroundSize: "50px 50px",
+      }} />
+
+      {/* Logo / Title */}
+      <div style={{ position: "relative", zIndex: 2, textAlign: "center", marginBottom: 56 }}>
+        <div style={{
+          fontSize: 11, letterSpacing: "0.4em",
+          color: "rgba(255,255,255,0.25)",
+          textTransform: "uppercase", marginBottom: 12,
+        }}>
+          Đang khởi động
+        </div>
+        <div style={{
+          fontSize: "clamp(32px, 6vw, 56px)",
+          fontWeight: 900,
+          letterSpacing: "0.08em",
+          color: "#fff",
+          textShadow: "0 0 60px rgba(100,140,255,0.4)",
+          textTransform: "uppercase",
+        }}>
+          PLAY FRAME FORGE
+        </div>
+        <div style={{
+          marginTop: 8,
+          fontSize: 12,
+          color: "rgba(255,255,255,0.2)",
+          letterSpacing: "0.2em",
+          textTransform: "uppercase",
+        }}>
+          3D Action RPG
+        </div>
+      </div>
+
+      {/* Progress */}
+      <div style={{ position: "relative", zIndex: 2, width: "min(400px, 80vw)" }}>
+        {/* Bar track */}
+        <div style={{
+          height: 2,
+          background: "rgba(255,255,255,0.06)",
+          borderRadius: 99,
+          overflow: "hidden",
+          marginBottom: 16,
+        }}>
+          <div style={{
+            height: "100%",
+            width: `${pct}%`,
+            background: "linear-gradient(90deg, #4466ff, #88aaff)",
+            borderRadius: 99,
+            transition: "width 0.3s ease",
+            boxShadow: "0 0 12px rgba(100,140,255,0.6)",
+          }} />
+        </div>
+
+        {/* Info row */}
+        <div style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}>
+          <div style={{
+            fontSize: 11,
+            color: "rgba(255,255,255,0.3)",
+            letterSpacing: "0.06em",
+            maxWidth: "70%",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}>
+            {label}
+          </div>
+          <div style={{
+            fontSize: 13,
+            fontWeight: 700,
+            color: "#6688ff",
+            letterSpacing: "0.04em",
+            fontVariantNumeric: "tabular-nums",
+          }}>
+            {pct}%
+          </div>
+        </div>
+      </div>
+
+      {/* Animated dots */}
+      <div style={{
+        position: "relative", zIndex: 2,
+        marginTop: 48,
+        display: "flex", gap: 6,
+      }}>
+        {[0,1,2].map(i => (
+          <div key={i} style={{
+            width: 4, height: 4,
+            borderRadius: "50%",
+            background: "#4466ff",
+            opacity: 0.4,
+            animation: `dotpulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+          }} />
+        ))}
+      </div>
+
+      <style>{`
+        @keyframes dotpulse {
+          0%, 100% { opacity: 0.2; transform: scale(1); }
+          50% { opacity: 1; transform: scale(1.5); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ── Loading Screen (chọn nhân vật xong) ───────────────────────────────────
 function LoadingScreen({ accent, name, title }: { accent: string; name: string; title: string }) {
   return (
     <div className="relative flex h-screen w-screen items-center justify-center overflow-hidden bg-black">
@@ -72,10 +273,10 @@ function LoadingScreen({ accent, name, title }: { accent: string; name: string; 
   );
 }
 
+// ── HUD ────────────────────────────────────────────────────────────────────
 function Hud({ character, onExit }: { character: CharacterDef; onExit: () => void }) {
   return (
     <>
-      {/* Top-left */}
       <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-3">
         <div
           className="flex h-14 w-14 items-center justify-center rounded-full border-2 text-xl font-bold text-white shadow-lg"
@@ -92,7 +293,6 @@ function Hud({ character, onExit }: { character: CharacterDef; onExit: () => voi
         </div>
       </div>
 
-      {/* Top-right */}
       <button
         onClick={onExit}
         className="absolute right-4 top-4 rounded-md border border-white/20 bg-black/40 px-3 py-1.5 text-xs uppercase tracking-[0.3em] text-white/80 backdrop-blur transition hover:bg-white/10"
@@ -100,7 +300,6 @@ function Hud({ character, onExit }: { character: CharacterDef; onExit: () => voi
         Đổi nhân vật
       </button>
 
-      {/* Bottom-left controls */}
       <div className="pointer-events-none absolute bottom-4 left-4 rounded-lg border border-white/10 bg-black/50 px-4 py-3 text-xs text-white/80 backdrop-blur">
         <div className="mb-1 text-[10px] uppercase tracking-[0.3em] text-white/40">Điều khiển</div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-1">
@@ -111,7 +310,6 @@ function Hud({ character, onExit }: { character: CharacterDef; onExit: () => voi
         </div>
       </div>
 
-      {/* Bottom-right minimap */}
       <div className="absolute bottom-4 right-4 h-32 w-32 rounded-lg border border-white/15 bg-black/40 backdrop-blur">
         <div className="absolute inset-2 rounded-md border border-white/10" />
         <div
@@ -124,4 +322,5 @@ function Hud({ character, onExit }: { character: CharacterDef; onExit: () => voi
       <style>{`.kbd{display:inline-block;min-width:1.3em;padding:0 .35em;margin-right:.25em;border-radius:.25rem;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);font-family:ui-monospace,monospace;font-size:.7rem}`}</style>
     </>
   );
-}
+      }
+      
