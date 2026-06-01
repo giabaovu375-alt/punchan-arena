@@ -6,7 +6,7 @@ is a route. Do **not** create `src/pages/`, `src/routes/_app/index.tsx`, or
 is `src/routes/__root.tsx`.
 
 ## Conventions
-
+ 
 | File | URL |
 | --- | --- |
 | `index.tsx` | `/` |
