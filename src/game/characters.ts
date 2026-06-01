@@ -14,7 +14,7 @@ export interface CharacterDef {
 }
 
 const HF = "https://huggingface.co/datasets/Toilatop1sever/Pun-Chan-Arena/resolve/main";
-
+ 
 export const CHARACTERS: CharacterDef[] = [
   {
     id: "osric",
