@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { GameCanvas } from "@/components/GameCanvas";
-
+ 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
