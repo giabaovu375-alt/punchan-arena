@@ -11,5 +11,9 @@
   ],
   "assets": {
     "directory": "./dist/client"
+  },
+  "alias": {
+    "three/examples/jsm/loaders/GLTFLoader": "three/examples/jsm/loaders/GLTFLoader.js",
+    "three/examples/jsm/loaders/FBXLoader": "three/examples/jsm/loaders/FBXLoader.js"
   }
 }
