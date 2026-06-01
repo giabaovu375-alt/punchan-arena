@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 
 interface Props {
-  onSelect: (char: CharacterDef) => void;
+  onConfirm: (char: CharacterDef) => void;
 }
 
 // Mini 3D preview per character
@@ -113,7 +113,7 @@ function StatBar({ label, value, color }: { label: string; value: number; color:
   );
 }
 
-export function CharacterSelect({ onSelect }: Props) {
+export function CharacterSelect({ onConfirm }: Props) {
   const [activeIdx, setActiveIdx] = useState(0);
   const char = CHARACTERS[activeIdx];
 
@@ -242,7 +242,7 @@ export function CharacterSelect({ onSelect }: Props) {
 
       {/* CTA */}
       <button
-        onClick={() => onSelect(char)}
+        onClick={() => onConfirm(char)}
         style={{
           position: "relative", zIndex: 2,
           marginTop: 20,
