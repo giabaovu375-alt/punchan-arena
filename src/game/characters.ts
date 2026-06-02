@@ -13,8 +13,10 @@ export interface CharacterDef {
   jumpSpeed: number;
 }
 
-const HF = "https://huggingface.co/datasets/Toilatop1sever/Pun-Chan-Arena/resolve/main";
- 
+// Sau khi deploy hf-proxy-worker.ts lên Cloudflare Workers
+// đổi URL này thành: https://tên-worker-của-bạn.workers.dev
+const PROXY = "https://hf-proxy.giabaovu375.workers.dev";
+
 export const CHARACTERS: CharacterDef[] = [
   {
     id: "osric",
@@ -23,7 +25,7 @@ export const CHARACTERS: CharacterDef[] = [
     description: "Lạnh lùng, bí ẩn. Tay kiếm lão luyện phiêu bạt khắp nơi — không ai biết xuất thân của hắn.",
     color: 0xc24a2a,
     accent: "#ff7a45",
-    modelUrl: `${HF}/model.glb`,
+    modelUrl: `${PROXY}/model.glb`,
     stats: { hp: 90, atk: 85, spd: 55, def: 80 },
     moveSpeed: 4.2,
     jumpSpeed: 6.5,
@@ -35,7 +37,7 @@ export const CHARACTERS: CharacterDef[] = [
     description: "Trẻ tuổi nhưng tài năng xuất chúng. Chuyên ma thuật ánh sáng — tấn công từ xa, linh hoạt.",
     color: 0x5b7cff,
     accent: "#7c9bff",
-    modelUrl: `${HF}/model1.glb`,
+    modelUrl: `${PROXY}/model1.glb`,
     stats: { hp: 60, atk: 95, spd: 70, def: 40 },
     moveSpeed: 4.8,
     jumpSpeed: 7.5,
@@ -47,7 +49,7 @@ export const CHARACTERS: CharacterDef[] = [
     description: "Cung thủ thiện xạ, dao găm sắc bén. Nhanh nhẹn và nguy hiểm — kẻ thù không bao giờ thấy cô trước.",
     color: 0x2dd4a8,
     accent: "#2dd4a8",
-    modelUrl: `${HF}/model2.glb`,
+    modelUrl: `${PROXY}/model2.glb`,
     stats: { hp: 70, atk: 80, spd: 95, def: 50 },
     moveSpeed: 6.0,
     jumpSpeed: 8.0,
@@ -56,4 +58,3 @@ export const CHARACTERS: CharacterDef[] = [
 
 export const getCharacter = (id: CharacterId) =>
   CHARACTERS.find((c) => c.id === id)!;
-
