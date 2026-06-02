@@ -64,11 +64,14 @@ function CharacterPreview({
 
     let modelNode: THREE.Object3D | null = null;
     let yaw = 0;
+    let cancelled = false;
 
     const addModel = (source: THREE.Object3D) => {
+      if (cancelled) return;
       const clone = source.clone();
       const box = new THREE.Box3().setFromObject(clone);
       const modelHeight = box.getSize(new THREE.Vector3()).y;
+      if (modelHeight === 0) { addFallback(); return; }
       clone.scale.setScalar(2 / modelHeight);
       clone.updateMatrixWorld(true);
       const box2 = new THREE.Box3().setFromObject(clone);
@@ -78,6 +81,7 @@ function CharacterPreview({
     };
 
     const addFallback = () => {
+      if (cancelled) return;
       const fb = new THREE.Mesh(
         new THREE.CylinderGeometry(0.3, 0.3, 1.8, 12),
         new THREE.MeshStandardMaterial({ color: accent })
@@ -87,48 +91,57 @@ function CharacterPreview({
       modelNode = fb;
     };
 
-    if (modelCache.has(modelUrl)) {
-      addModel(modelCache.get(modelUrl)!);
-    } else {
-      const loader = new GLTFLoader();
-      // Fetch thủ công với cors mode để bypass CORS từ HuggingFace
-      fetch(modelUrl, { mode: "cors" })
-  .then((res) => {
-    console.log("Fetch OK:", modelUrl, res.status);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.arrayBuffer();
-  })
-  .then((buffer) => {
-    console.log("Buffer size:", buffer.byteLength);
-    loader.parse(
-      buffer,
-      "",
-      (gltf) => {
-        console.log("GLTF parsed OK!", modelUrl);
-        modelCache.set(modelUrl, gltf.scene);
-        addModel(gltf.scene);
-      },
-      (err) => {
-        console.error("GLTF parse error:", err);
-        addFallback();
+    const loadModel = async () => {
+      if (modelCache.has(modelUrl)) {
+        addModel(modelCache.get(modelUrl)!);
+        return;
       }
-    );
-  })
-  .catch((err) => {
-    console.error("Fetch FAILED:", modelUrl, err.message);
-    addFallback();
-  });
-            buffer,
-            "",
+      try {
+        // Thử GLTFLoader trực tiếp trước
+        await new Promise<void>((resolve, reject) => {
+          new GLTFLoader().load(
+            modelUrl,
             (gltf) => {
               modelCache.set(modelUrl, gltf.scene);
               addModel(gltf.scene);
+              resolve();
             },
-            () => addFallback()
+            undefined,
+            reject
           );
-        })
-        .catch(() => addFallback());
-    }
+        });
+      } catch {
+        // Fallback: fetch thủ công với cors
+        try {
+          const res = await fetch(modelUrl, { mode: "cors", cache: "force-cache" });
+          console.log("[Model] fetch status:", res.status, modelUrl);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const buffer = await res.arrayBuffer();
+          console.log("[Model] buffer size:", buffer.byteLength);
+          await new Promise<void>((resolve, reject) => {
+            new GLTFLoader().parse(
+              buffer,
+              "",
+              (gltf) => {
+                console.log("[Model] parsed OK:", modelUrl);
+                modelCache.set(modelUrl, gltf.scene);
+                addModel(gltf.scene);
+                resolve();
+              },
+              (err) => {
+                console.error("[Model] parse error:", err);
+                reject(err);
+              }
+            );
+          });
+        } catch (err) {
+          console.error("[Model] FAILED:", modelUrl, err);
+          addFallback();
+        }
+      }
+    };
+
+    loadModel();
 
     const tick = () => {
       animIdRef.current = requestAnimationFrame(tick);
@@ -139,6 +152,7 @@ function CharacterPreview({
     tick();
 
     return () => {
+      cancelled = true;
       cancelAnimationFrame(animIdRef.current);
       renderer.dispose();
       if (renderer.domElement.parentElement === el) {
@@ -247,7 +261,7 @@ export function CharacterSelect({ onConfirm }: Props) {
         }}
       />
 
-      {/* Accent glow behind active card */}
+      {/* Accent glow */}
       <div
         style={{
           position: "absolute",
@@ -267,23 +281,8 @@ export function CharacterSelect({ onConfirm }: Props) {
       />
 
       {/* Title */}
-      <div
-        style={{
-          position: "relative",
-          zIndex: 2,
-          textAlign: "center",
-          marginBottom: 24,
-        }}
-      >
-        <div
-          style={{
-            fontSize: 11,
-            letterSpacing: "0.3em",
-            color: "#555",
-            textTransform: "uppercase",
-            marginBottom: 6,
-          }}
-        >
+      <div style={{ position: "relative", zIndex: 2, textAlign: "center", marginBottom: 24 }}>
+        <div style={{ fontSize: 11, letterSpacing: "0.3em", color: "#555", textTransform: "uppercase", marginBottom: 6 }}>
           Chọn Nhân Vật
         </div>
         <div
@@ -331,77 +330,33 @@ export function CharacterSelect({ onConfirm }: Props) {
                 display: "flex",
                 flexDirection: "column",
                 overflow: "hidden",
-                boxShadow: isActive
-                  ? `0 0 40px ${c.accent}22, inset 0 0 0 0.5px ${c.accent}44`
-                  : "none",
+                boxShadow: isActive ? `0 0 40px ${c.accent}22, inset 0 0 0 0.5px ${c.accent}44` : "none",
               }}
             >
-              {/* 3D preview */}
               <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
                 <CharacterPreview modelUrl={c.modelUrl} accent={c.accent} isActive={isActive} />
-                {/* Name overlay */}
                 <div
                   style={{
-                    position: "absolute",
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
+                    position: "absolute", bottom: 0, left: 0, right: 0,
                     padding: "32px 16px 12px",
                     background: "linear-gradient(transparent, rgba(0,0,0,0.85))",
                   }}
                 >
-                  <div
-                    style={{
-                      fontSize: isActive ? 20 : 13,
-                      fontWeight: 800,
-                      color: "#fff",
-                      transition: "font-size 0.3s",
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
+                  <div style={{ fontSize: isActive ? 20 : 13, fontWeight: 800, color: "#fff", transition: "font-size 0.3s", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {c.name}
                   </div>
-                  <div
-                    style={{
-                      fontSize: 10,
-                      color: c.accent,
-                      letterSpacing: "0.06em",
-                      textTransform: "uppercase",
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
+                  <div style={{ fontSize: 10, color: c.accent, letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {c.title}
                   </div>
                 </div>
               </div>
 
-              {/* Stats panel — only active */}
               {isActive && (
-                <div
-                  style={{
-                    padding: "14px 18px 18px",
-                    borderTop: `1px solid ${c.accent}22`,
-                  }}
-                >
-                  <p
-                    style={{
-                      fontSize: 11,
-                      color: "#888",
-                      lineHeight: 1.6,
-                      marginBottom: 12,
-                      display: "-webkit-box",
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: "vertical",
-                      overflow: "hidden",
-                    }}
-                  >
+                <div style={{ padding: "14px 18px 18px", borderTop: `1px solid ${c.accent}22` }}>
+                  <p style={{ fontSize: 11, color: "#888", lineHeight: 1.6, marginBottom: 12, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                     {c.description}
                   </p>
-                  <StatBar label="HP" value={c.stats.hp} color={c.accent} />
+                  <StatBar label="HP"  value={c.stats.hp}  color={c.accent} />
                   <StatBar label="ATK" value={c.stats.atk} color={c.accent} />
                   <StatBar label="SPD" value={c.stats.spd} color={c.accent} />
                   <StatBar label="DEF" value={c.stats.def} color={c.accent} />
@@ -413,107 +368,45 @@ export function CharacterSelect({ onConfirm }: Props) {
       </div>
 
       {/* Bottom nav + arrows */}
-      <div
-        style={{
-          position: "relative",
-          zIndex: 2,
-          marginTop: 20,
-          display: "flex",
-          gap: 14,
-          alignItems: "center",
-        }}
-      >
-        {/* Prev arrow */}
+      <div style={{ position: "relative", zIndex: 2, marginTop: 20, display: "flex", gap: 14, alignItems: "center" }}>
         <button
           onClick={handlePrev}
-          style={{
-            background: "rgba(255,255,255,0.06)",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: 8,
-            color: "#fff",
-            width: 32,
-            height: 32,
-            cursor: "pointer",
-            fontSize: 14,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          ‹
-        </button>
+          style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fff", width: 32, height: 32, cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }}
+        >‹</button>
 
-        {/* Dot indicators */}
         {CHARACTERS.map((c, i) => (
           <div
             key={c.id}
             onClick={() => setActiveIdx(i)}
-            style={{
-              width: i === activeIdx ? 24 : 8,
-              height: 8,
-              borderRadius: 99,
-              background: i === activeIdx ? char.accent : "rgba(255,255,255,0.15)",
-              cursor: "pointer",
-              transition: "all 0.3s",
-            }}
+            style={{ width: i === activeIdx ? 24 : 8, height: 8, borderRadius: 99, background: i === activeIdx ? char.accent : "rgba(255,255,255,0.15)", cursor: "pointer", transition: "all 0.3s" }}
           />
         ))}
 
-        {/* Next arrow */}
         <button
           onClick={handleNext}
-          style={{
-            background: "rgba(255,255,255,0.06)",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: 8,
-            color: "#fff",
-            width: 32,
-            height: 32,
-            cursor: "pointer",
-            fontSize: 14,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          ›
-        </button>
+          style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fff", width: 32, height: 32, cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }}
+        >›</button>
       </div>
 
       {/* CTA */}
       <button
         onClick={() => onConfirm(char)}
         style={{
-          position: "relative",
-          zIndex: 2,
-          marginTop: 16,
-          padding: "14px 48px",
-          borderRadius: 12,
-          border: "none",
-          cursor: "pointer",
-          fontSize: 15,
-          fontWeight: 800,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
+          position: "relative", zIndex: 2, marginTop: 16,
+          padding: "14px 48px", borderRadius: 12, border: "none", cursor: "pointer",
+          fontSize: 15, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase",
           fontFamily: "'Segoe UI', sans-serif",
           background: `linear-gradient(135deg, ${char.accent}, ${char.accent}aa)`,
           color: "#000",
           boxShadow: `0 6px 32px ${char.accent}55`,
           transition: "all 0.2s",
         }}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)";
-          (e.currentTarget as HTMLElement).style.filter = "brightness(1.15)";
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLElement).style.transform = "none";
-          (e.currentTarget as HTMLElement).style.filter = "none";
-        }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)"; (e.currentTarget as HTMLElement).style.filter = "brightness(1.15)"; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.transform = "none"; (e.currentTarget as HTMLElement).style.filter = "none"; }}
       >
         ▶ CHỌN {char.name.toUpperCase()}
       </button>
     </div>
   );
-              }
-
-    
+      }
+                  
