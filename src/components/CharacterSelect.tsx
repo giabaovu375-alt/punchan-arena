@@ -93,12 +93,31 @@ function CharacterPreview({
       const loader = new GLTFLoader();
       // Fetch thủ công với cors mode để bypass CORS từ HuggingFace
       fetch(modelUrl, { mode: "cors" })
-        .then((res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.arrayBuffer();
-        })
-        .then((buffer) => {
-          loader.parse(
+  .then((res) => {
+    console.log("Fetch OK:", modelUrl, res.status);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.arrayBuffer();
+  })
+  .then((buffer) => {
+    console.log("Buffer size:", buffer.byteLength);
+    loader.parse(
+      buffer,
+      "",
+      (gltf) => {
+        console.log("GLTF parsed OK!", modelUrl);
+        modelCache.set(modelUrl, gltf.scene);
+        addModel(gltf.scene);
+      },
+      (err) => {
+        console.error("GLTF parse error:", err);
+        addFallback();
+      }
+    );
+  })
+  .catch((err) => {
+    console.error("Fetch FAILED:", modelUrl, err.message);
+    addFallback();
+  });
             buffer,
             "",
             (gltf) => {
@@ -496,4 +515,5 @@ export function CharacterSelect({ onConfirm }: Props) {
     </div>
   );
               }
-            
+
+    
