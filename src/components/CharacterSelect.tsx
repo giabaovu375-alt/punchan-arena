@@ -90,15 +90,25 @@ function CharacterPreview({
     if (modelCache.has(modelUrl)) {
       addModel(modelCache.get(modelUrl)!);
     } else {
-      new GLTFLoader().load(
-        modelUrl,
-        (gltf) => {
-          modelCache.set(modelUrl, gltf.scene);
-          addModel(gltf.scene);
-        },
-        undefined,
-        () => addFallback()
-      );
+      const loader = new GLTFLoader();
+      // Fetch thủ công với cors mode để bypass CORS từ HuggingFace
+      fetch(modelUrl, { mode: "cors" })
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.arrayBuffer();
+        })
+        .then((buffer) => {
+          loader.parse(
+            buffer,
+            "",
+            (gltf) => {
+              modelCache.set(modelUrl, gltf.scene);
+              addModel(gltf.scene);
+            },
+            () => addFallback()
+          );
+        })
+        .catch(() => addFallback());
     }
 
     const tick = () => {
@@ -485,4 +495,5 @@ export function CharacterSelect({ onConfirm }: Props) {
       </button>
     </div>
   );
-}
+              }
+            
