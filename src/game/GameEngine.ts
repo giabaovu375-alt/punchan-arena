@@ -537,6 +537,7 @@ export class GameEngine {
     if(this.input.left)     move.sub(rgt);
 
     const moving=move.lengthSq()>0;
+    if(moving) console.log("pos:", this.player.position.x.toFixed(2), this.player.position.z.toFixed(2));
     if(moving){
       move.normalize();
       const spd=this.moveSpeed*(this.input.sprint?this.sprintMultiplier:1);
