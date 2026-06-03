@@ -968,6 +968,8 @@ export class GameEngine {
       this.velocity.y = 0;
       this.onGround = true;
     } else if (this.player.position.y > this.playerFloor + 0.15) {
+      // Thêm ngay sau phần onGround check
+console.log("onGround:", this.onGround, "| pos.y:", this.player.position.y.toFixed(3), "| currentKey:", this.currentKey, "| vel.y:", this.velocity.y.toFixed(3));
       // chỉ set false khi rõ ràng đang nhảy/rơi, không phải microflicker
       this.onGround = false;
     }
