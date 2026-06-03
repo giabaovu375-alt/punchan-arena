@@ -977,6 +977,8 @@ export class GameEngine {
       this.onGround = false;
     }
 
+    console.log("gnd:", this.onGround, "y:", this.player.position.y.toFixed(3), "key:", this.currentKey);
+
     const d = Math.hypot(this.player.position.x, this.player.position.z);
     if (d > this.worldRadius) {
       this.player.position.x *= this.worldRadius / d;
