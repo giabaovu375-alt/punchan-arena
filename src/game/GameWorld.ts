@@ -5,13 +5,6 @@ export interface WorldHandles {
   fireLight: THREE.PointLight;
 }
 
-const TREE_MODELS = [
-  "CommonTree_1", "CommonTree_2", "CommonTree_3", "CommonTree_4", "CommonTree_5",
-  "Pine_1", "Pine_2", "Pine_3", "Pine_4", "Pine_5",
-  "TwistedTree_1", "TwistedTree_2", "TwistedTree_3", "TwistedTree_4", "TwistedTree_5",
-  "Bush_Common", "Bush_Common_Flowers", "Fern_1",
-];
-
 /**
  * Build static world: lighting, ground, path, lake, trees, rocks,
  * stone arch, huts, campfire. Trả về handle cho object cần update per-frame.
@@ -77,25 +70,25 @@ export function buildWorld(scene: THREE.Scene, isMobile = false): WorldHandles {
   lake.position.set(-45, 0.03, 35);
   scene.add(lake);
 
-  // ── Trees (glTF) ──────────────────────────────────────────────────────────
+  // ── Trees (cố định, 4 cây) ────────────────────────────────────────────────
+  // 1 cây đỏ (TwistedTree) cạnh cổng đá + 3 cây xanh lá (CommonTree) xung quanh
   const loader = new GLTFLoader();
 
-  for (let i = 0; i < 80; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    const dist  = 25 + Math.random() * 100;
-    const x = Math.cos(angle) * dist;
-    const z = Math.sin(angle) * dist;
-    if (Math.hypot(x + 45, z - 35) < 18) continue; // tránh đè lake
+  const FIXED_TREES: { model: string; x: number; z: number; scale: number; rotY: number }[] = [
+    // Cây đỏ — ngay bên cạnh cổng đá (arch ở z = -18)
+    { model: "TwistedTree_1", x: 4,   z: -20, scale: 1.4, rotY: 0.3 },
+    // 3 cây xanh lá
+    { model: "CommonTree_2",  x: -8,  z: 10,  scale: 1.1, rotY: 1.0 },
+    { model: "CommonTree_4",  x: 14,  z: -5,  scale: 1.2, rotY: 2.5 },
+    { model: "CommonTree_1",  x: -12, z: -14, scale: 1.0, rotY: 0.8 },
+  ];
 
-    const name = TREE_MODELS[Math.floor(Math.random() * TREE_MODELS.length)];
-    const scale = 0.7 + Math.random() * 0.9;
-    const rotY  = Math.random() * Math.PI * 2;
-
-    loader.load(`/model-tree/${name}.gltf`, (gltf) => {
+  for (const t of FIXED_TREES) {
+    loader.load(`/model-tree/${t.model}.gltf`, (gltf) => {
       const tree = gltf.scene;
-      tree.position.set(x, 0, z);
-      tree.scale.setScalar(scale);
-      tree.rotation.y = rotY;
+      tree.position.set(t.x, 0, t.z);
+      tree.scale.setScalar(t.scale);
+      tree.rotation.y = t.rotY;
       tree.traverse((obj) => {
         if ((obj as THREE.Mesh).isMesh) {
           obj.castShadow = true;
