@@ -8,20 +8,6 @@ import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader";
 
 type Stage = "preload" | "select" | "loading" | "playing";
 
-const ANIM_MAP: Record<AnimKey, string> = {
-  idle:     "/animation/Idle.fbx",
-  walk:     "/animation/Walking.fbx",
-  run:      "/animation/Running.fbx",
-  jump:     "/animation/Jumping.fbx",
-  punch:    "/animation/Hook Punch.fbx",
-  kick:     "/animation/Kicking.fbx",
-  uppercut: "/animation/Uppercut Jab.fbx",
-  dropKick: "/animation/Drop Kick.fbx",
-  mmaKick:  "/animation/Mma Kick.fbx",
-  elbow:    "/animation/Elbow Uppercut Combo.fbx",
-  pain:     "/animation/Pain Gesture.fbx",
-};
-
 const modelCache = new Map<string, THREE.Group>();
 const clipCache  = new Map<string, THREE.AnimationClip>();
 
