@@ -9,52 +9,38 @@ import { buildWorld, tickFireLight } from "./GameWorld";
 
 export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
 
-/**
- * Top-level orchestrator: scene/camera/renderer + game loop.
- * Sub-modules:
- *   - PlayerController   → input + movement + stamina
- *   - AnimationController → mixer + combat + combo
- *   - HUD                 → status card, compass, combo flash
- *   - MobileUI            → joystick + buttons (chỉ trên touch device)
- *   - GameWorld           → tĩnh (lighting, ground, props)
- */
 export class GameEngine {
   private container: HTMLElement;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
-  private clock = new THREE.Clock();
+  private timer = new THREE.Timer(); // fix: THREE.Clock deprecated
   private rafId = 0;
   private disposed = false;
 
   private character: CharacterDef;
   private isMobile: boolean;
 
-  // Player rig — Group là logic position, model là child (visual offset)
   private player!: THREE.Object3D;
   private modelRoot: THREE.Object3D | null = null;
   private bodyParts: { body: THREE.Object3D; head: THREE.Object3D } | null = null;
   private playerHeight = 1.6;
   private animTime = 0;
 
-  // Camera orbit
   private cameraYaw = 0;        private targetYaw = 0;
   private cameraPitch = -0.25;  private targetPitch = -0.25;
   private cameraDistance = 6;   private targetDistance = 6;
   private isRotating = false;
   private lastMouse = { x: 0, y: 0 };
 
-  // World
   private worldRadius = 140;
   private fireLight!: THREE.PointLight;
 
-  // Sub-systems
   private animCtrl!: AnimationController;
   private playerCtrl!: PlayerController;
   private hud!: HUD;
   private mobileUI: MobileUI | null = null;
 
-  // scratch vectors
   private _camOff    = new THREE.Vector3();
   private _tgt       = new THREE.Vector3();
   private _camTarget = new THREE.Vector3();
@@ -91,16 +77,11 @@ export class GameEngine {
     container.style.position = "relative";
     container.appendChild(this.renderer.domElement);
 
-    // ── World ───────────────────────────────────────────────────────────────
-    const handles = buildWorld(this.scene, this.isMobile);
-    this.fireLight = handles.fireLight;
-    this.playerCtrl.setColliders(handles.colliders);
-
     // ── Player rig ──────────────────────────────────────────────────────────
     this.player = new THREE.Group();
     this.player.name = "PlayerRig";
 
-    // ── Sub-controllers ─────────────────────────────────────────────────────
+    // ── Sub-controllers (khởi tạo TRƯỚC buildWorld) ─────────────────────────
     this.playerCtrl = new PlayerController({
       character,
       worldRadius: this.worldRadius,
@@ -112,10 +93,17 @@ export class GameEngine {
       onComboChanged: (count) => this.hud.flashCombo(count),
     });
 
+    // ── World (sau playerCtrl) ───────────────────────────────────────────────
+    const handles = buildWorld(this.scene, this.isMobile);
+    this.fireLight = handles.fireLight;
+    this.playerCtrl.setColliders(handles.colliders); // fix: giờ playerCtrl đã tồn tại
+
+    // ── Model ────────────────────────────────────────────────────────────────
     if (model) {
-      const { modelRoot, playerHeight } = this.animCtrl.setupModel(this.player, model, clips);
+      const { modelRoot, playerHeight, footOffset } = this.animCtrl.setupModel(this.player, model, clips);
       this.modelRoot = modelRoot;
       this.playerHeight = playerHeight;
+      this.playerCtrl.setFloor(footOffset);
     } else {
       this.player.add(this.createPlaceholder());
     }
@@ -147,9 +135,6 @@ export class GameEngine {
     this.start();
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PLACEHOLDER (khi không có model)
-  // ═══════════════════════════════════════════════════════════════════════════
   private createPlaceholder(): THREE.Object3D {
     const group = new THREE.Group();
     const bodyMat = new THREE.MeshStandardMaterial({
@@ -175,9 +160,6 @@ export class GameEngine {
     return group;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // MOUSE / RESIZE
-  // ═══════════════════════════════════════════════════════════════════════════
   private bindMouseAndResize() {
     this.renderer.domElement.addEventListener("mousedown", this.onMouseDown);
     window.addEventListener("mouseup",   this.onMouseUp);
@@ -192,7 +174,7 @@ export class GameEngine {
     this.lastMouse = { x: e.clientX, y: e.clientY };
     if (e.button === 0) this.animCtrl.triggerAttack("punch");
   };
-  private onMouseUp = () => { this.isRotating = false; };
+  private onMouseUp   = () => { this.isRotating = false; };
   private onMouseMove = (e: MouseEvent) => {
     if (!this.isRotating) return;
     this.targetYaw   -= (e.clientX - this.lastMouse.x) * 0.005;
@@ -211,15 +193,12 @@ export class GameEngine {
     this.renderer.setSize(w, h);
   };
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // LOOP
-  // ═══════════════════════════════════════════════════════════════════════════
   private start() {
-    this.clock.start();
+    this.timer.update(); // khởi động timer
     const tick = () => {
       if (this.disposed) return;
-      const rawDt = this.clock.getDelta();
-      const dt = Math.min(rawDt, 0.05);
+      this.timer.update();
+      const dt = Math.min(this.timer.getDelta(), 0.05);
       this.update(dt);
       this.renderer.render(this.scene, this.camera);
       this.rafId = requestAnimationFrame(tick);
@@ -228,19 +207,16 @@ export class GameEngine {
   }
 
   private update(dt: number) {
-    // Camera smoothing
     const lk = 1 - Math.exp(-12 * dt);
     this.cameraYaw       = lerpAngle(this.cameraYaw, this.targetYaw, lk);
     this.cameraPitch    += (this.targetPitch - this.cameraPitch) * lk;
     this.cameraDistance += (this.targetDistance - this.cameraDistance) * lk;
 
-    // Player + animation
     const { moving, sprinting, onGround } =
       this.playerCtrl.update(dt, this.cameraYaw, this.player);
     const { isAttacking } = this.animCtrl.update(dt);
     if (!isAttacking) this.animCtrl.drive(moving, sprinting, onGround);
 
-    // Placeholder bob (chỉ khi không có model thật)
     this.animTime += dt;
     if (this.bodyParts) {
       const bob = moving && onGround
@@ -252,7 +228,6 @@ export class GameEngine {
 
     tickFireLight(this.fireLight);
 
-    // Camera follow — anchor ngực thay vì đỉnh đầu
     const camOff = this._camOff.set(
       Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch),
       -Math.sin(this.cameraPitch),
@@ -264,15 +239,11 @@ export class GameEngine {
     this.camera.position.lerp(this._camTarget, lk * 1.8);
     this.camera.lookAt(tgt);
 
-    // HUD
     this.hud.setStamina(this.playerCtrl.stamina);
     this.hud.setHP(this.playerCtrl.hp);
     this.hud.setCompassYaw(this.cameraYaw);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PUBLIC API
-  // ═══════════════════════════════════════════════════════════════════════════
   getScene()  { return this.scene;  }
   getPlayer() { return this.player; }
   getMixer()  { return this.animCtrl.getMixer(); }
@@ -280,17 +251,14 @@ export class GameEngine {
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
-
     this.playerCtrl.unbindKeyboard();
     window.removeEventListener("mouseup",   this.onMouseUp);
     window.removeEventListener("mousemove", this.onMouseMove);
     window.removeEventListener("resize",    this.onResize);
-
     this.mobileUI?.dispose();
     this.hud.dispose();
     this.renderer.dispose();
-
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-}
+    }
