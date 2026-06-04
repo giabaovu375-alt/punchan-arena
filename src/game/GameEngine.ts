@@ -181,6 +181,7 @@ export class GameEngine {
     this.clearScene();
     this.introHandles = buildIntroScene(this.scene, this.isMobile);
     this.playerCtrl.setColliders([]);
+    // ✅ Dùng .copy() thay vì gán =
     if (this.player?.position && PLAYER_SPAWN) {
       this.player.position.copy(PLAYER_SPAWN);
     }
@@ -194,6 +195,7 @@ export class GameEngine {
     this.clearScene();
     this.hubHandles = buildHubScene(this.scene, this.isMobile);
     this.playerCtrl.setColliders([]);
+    // ✅ Dùng .copy()
     if (this.player?.position && HUB_SPAWN) {
       this.player.position.copy(HUB_SPAWN);
     }
@@ -329,7 +331,7 @@ export class GameEngine {
         );
       }
     } else if (this.sceneMode === "hub" && this.hubHandles) {
-      // ✅ Kiểm tra tick tồn tại trước khi gọi
+      // ✅ Gọi tick nếu tồn tại
       if (typeof this.hubHandles.tick === "function") {
         this.hubHandles.tick(dt);
       }
@@ -353,7 +355,7 @@ export class GameEngine {
 
     this.dialogue.update(dt);
 
-    // Camera follow
+    // Camera follow (dùng .copy() an toàn)
     const camOff = this._camOff.set(
       Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch),
       -Math.sin(this.cameraPitch),
@@ -395,4 +397,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-           }
+}
