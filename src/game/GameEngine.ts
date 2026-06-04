@@ -8,6 +8,7 @@ import { MobileUI } from "./MobileUI";
 import { buildWorld, tickFireLight } from "./GameWorld";
 import { buildIntroScene, tickIntroScene, PLAYER_SPAWN, type IntroSceneHandles } from "./IntroScene";
 import { DialogueUI, fadeToWhite } from "./DialogueUI";
+import { INTRO_NPC_DIALOGUE } from "./dialogues";
 
 export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
 
@@ -291,12 +292,8 @@ export class GameEngine {
       ) {
         this.npcTriggered = true;
         this.dialogue.show(
-          "Người Lạ",
-          [
-            "Cậu đã sẵn sàng đến thế giới Punchan Arena chưa?",
-            "Nơi đó... không dành cho kẻ yếu đuối.",
-            "Hãy chứng minh bản thân.",
-          ],
+          INTRO_NPC_DIALOGUE.npcName,
+          INTRO_NPC_DIALOGUE.lines,
           () => {
             fadeToWhite(this.container, () => this.switchToWorld());
           },
@@ -350,4 +347,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-                   }
+      }
