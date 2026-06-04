@@ -16,12 +16,16 @@ import {
   type IntroSceneHandles,
 } from "./IntroScene";
 
-// Hub scene (mới)
+// Hub scene
 import {
   buildHubScene,
   HUB_SPAWN,
   type HubSceneHandles,
 } from "./scenes/HubScene";
+
+// Event system (nếu cần thêm sự kiện portal)
+import { eventBus } from "./core/EventBus";
+import { GameEvents } from "./types/events";
 
 export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
 
@@ -68,6 +72,7 @@ export class GameEngine {
   private introHandles: IntroSceneHandles | null = null;
   private hubHandles: HubSceneHandles | null = null;
   private npcTriggered = false;
+  private lastPortalTarget: string | null = null;
 
   // Scratch vectors (reuse)
   private _camOff = new THREE.Vector3();
@@ -191,16 +196,18 @@ export class GameEngine {
     this.sceneMode = "intro";
     this.npcTriggered = false;
     this.hubHandles = null;
+    this.lastPortalTarget = null;
   }
 
   /** Chuyển sang HubScene */
   private switchToHub() {
     this.clearScene();
     this.hubHandles = buildHubScene(this.scene, this.isMobile);
-    this.playerCtrl.setColliders([]); // hub cũng chưa có collider phức tạp, sẽ thêm sau
+    this.playerCtrl.setColliders([]); // hub chưa có collider phức tạp
     this.player.position.copy(HUB_SPAWN);
     this.sceneMode = "hub";
     this.introHandles = null;
+    this.lastPortalTarget = null;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -253,7 +260,6 @@ export class GameEngine {
   private onMouseDown = (e: MouseEvent) => {
     this.isRotating = true;
     this.lastMouse = { x: e.clientX, y: e.clientY };
-    // Trong hub hoặc intro, click trái cũng có thể tấn công (giữ tính năng)
     if (e.button === 0) this.animCtrl.triggerAttack("punch");
   };
   private onMouseUp = () => (this.isRotating = false);
@@ -345,13 +351,21 @@ export class GameEngine {
     } else if (this.sceneMode === "hub" && this.hubHandles) {
       this.hubHandles.tick(dt);
 
-      // Kiểm tra portal (khi không trong dialogue và không đang tấn công)
+      // Kiểm tra portal (chỉ khi không trong dialogue và không đang tấn công)
       if (!locked && !isAttacking) {
         const target = this.hubHandles.checkPortals(this.player.position);
         if (target) {
-          console.log(`🌐 Portal đến: ${target}`);
-          // Sau này sẽ gọi sceneManager.switchScene(target)
-          // Hiện tại chỉ log, tránh lỗi.
+          // Chỉ emit một lần khi bước vào portal
+          if (target !== this.lastPortalTarget) {
+            this.lastPortalTarget = target;
+            eventBus.emit(GameEvents.PORTAL_ENTERED, {
+              targetScene: target,
+              spawnPos: this.player.position.clone(),
+            });
+            console.log(`🌐 Portal đến: ${target}`);
+          }
+        } else {
+          this.lastPortalTarget = null;
         }
       }
     }
@@ -410,4 +424,4 @@ export class GameEngine {
       this.container.removeChild(this.renderer.domElement);
     }
   }
-  }
+        }
