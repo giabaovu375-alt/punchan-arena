@@ -94,6 +94,7 @@ export class GameEngine {
     // ── World ───────────────────────────────────────────────────────────────
     const handles = buildWorld(this.scene, this.isMobile);
     this.fireLight = handles.fireLight;
+    this.playerCtrl.setColliders(handles.colliders);
 
     // ── Player rig ──────────────────────────────────────────────────────────
     this.player = new THREE.Group();
