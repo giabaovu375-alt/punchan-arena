@@ -1,27 +1,15 @@
-/**
- * HubScene - Cây Đỏ Khổng Lồ
- * Trung tâm map: kết nối MainRoad, LeftForest, RightPlatform, BossArena
- *
- * Tối ưu:
- *  - ModelCache: mỗi .gltf chỉ load 1 lần, clone() cho các instance
- *  - Batch load song song (Promise.all) trước khi scatter
- *  - InstancedMesh cho ground detail nhỏ (grass, pebble, clover...)
- *    → giảm từ ~150 draw calls xuống ~15
- */
-
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { BaseScene } from './BaseScene';
 import { eventBus } from '../core/EventBus';
 import { GameEvents } from '../types/events';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const MODEL_BASE = '/public/model/model cây/glTF';
+// ─── Constants ───────────────────────────────────────────────────────────────
+// Đường dẫn đúng từ thư mục public (bỏ 'public', mã hóa khoảng trắng)
+const MODEL_BASE = '/model%20cây/glTF';
 export const HUB_SPAWN = new THREE.Vector3(0, 0, 30);
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
+// ─── Types ───────────────────────────────────────────────────────────────────
 interface PortalMarker {
   targetScene: string;
   position: THREE.Vector3;
@@ -45,15 +33,7 @@ interface LeafParticleSystem {
 }
 
 // ─── Helper Functions ─────────────────────────────────────────────────────────
-
-/**
- * Load tất cả models cần thiết song song.
- * Trả về Map<modelName, THREE.Group> — dùng .clone() khi đặt vào scene.
- */
-async function loadModels(
-  loader: GLTFLoader,
-  names: string[]
-): Promise<Map<string, THREE.Group>> {
+async function loadModels(loader: GLTFLoader, names: string[]): Promise<Map<string, THREE.Group>> {
   const cache = new Map<string, THREE.Group>();
   const unique = [...new Set(names)];
 
@@ -80,9 +60,6 @@ async function loadModels(
   return cache;
 }
 
-/**
- * Clone model từ cache, set shadow, trả về group đã sẵn sàng
- */
 function spawnModel(
   cache: Map<string, THREE.Group>,
   name: string,
@@ -108,17 +85,11 @@ function spawnModel(
   return obj;
 }
 
-/**
- * Seeded random number generator
- */
 function seededRand(seed: number): number {
   const x = Math.sin(seed + 1) * 43758.5453123;
   return x - Math.floor(x);
 }
 
-/**
- * Generate scatter points với seeded RNG
- */
 function generateScatter(
   models: string[],
   count: number,
@@ -157,54 +128,6 @@ function generateScatter(
   return items;
 }
 
-/**
- * Dùng InstancedMesh để render nhiều object nhỏ giống nhau
- * với 1 draw call duy nhất.
- */
-function buildInstancedGroup(
-  src: THREE.Group,
-  items: ScatterItem[],
-  modelName: string
-): THREE.InstancedMesh[] {
-  const meshes: THREE.InstancedMesh[] = [];
-  const filtered = items.filter((i) => i.modelName === modelName);
-  if (filtered.length === 0) return meshes;
-
-  // Thu thập tất cả mesh con trong model gốc
-  const srcMeshes: THREE.Mesh[] = [];
-  src.traverse((o) => {
-    if ((o as THREE.Mesh).isMesh) srcMeshes.push(o as THREE.Mesh);
-  });
-
-  const dummy = new THREE.Object3D();
-
-  for (const srcMesh of srcMeshes) {
-    const instanced = new THREE.InstancedMesh(
-      srcMesh.geometry,
-      srcMesh.material,
-      filtered.length
-    );
-    instanced.castShadow = false;
-    instanced.receiveShadow = true;
-
-    filtered.forEach((item, idx) => {
-      dummy.position.set(item.x, 0, item.z);
-      dummy.scale.setScalar(item.scale);
-      dummy.rotation.y = item.rotY;
-      dummy.updateMatrix();
-      instanced.setMatrixAt(idx, dummy.matrix);
-    });
-
-    instanced.instanceMatrix.needsUpdate = true;
-    meshes.push(instanced);
-  }
-
-  return meshes;
-}
-
-/**
- * Tạo portal mesh với ring, glow, label
- */
 function createPortalMesh(color: number, label: string): THREE.Group {
   const group = new THREE.Group();
 
@@ -265,9 +188,6 @@ function createPortalMesh(color: number, label: string): THREE.Group {
   return group;
 }
 
-/**
- * Thêm path lights giữa portals
- */
 function addPathLights(scene: THREE.Scene, portalPos: THREE.Vector3, color: number): void {
   for (let i = 1; i <= 3; i++) {
     const t = i / 4;
@@ -277,9 +197,6 @@ function addPathLights(scene: THREE.Scene, portalPos: THREE.Vector3, color: numb
   }
 }
 
-/**
- * Tạo leaf particle system
- */
 function createLeafParticles(scene: THREE.Scene): LeafParticleSystem {
   const count = 120;
   const positions = new Float32Array(count * 3);
@@ -312,9 +229,6 @@ function createLeafParticles(scene: THREE.Scene): LeafParticleSystem {
   return { points, velocities, positions, count };
 }
 
-/**
- * Update leaf particles
- */
 function tickLeafParticles(sys: LeafParticleSystem, dt: number): void {
   for (let i = 0; i < sys.count; i++) {
     sys.positions[i * 3] += sys.velocities[i * 3] * dt;
@@ -332,7 +246,6 @@ function tickLeafParticles(sys: LeafParticleSystem, dt: number): void {
 }
 
 // ─── Main Scene Class ─────────────────────────────────────────────────────────
-
 export class HubScene extends BaseScene {
   private loader: GLTFLoader;
   private modelCache: Map<string, THREE.Group> = new Map();
@@ -341,9 +254,13 @@ export class HubScene extends BaseScene {
   private warmGlow: THREE.PointLight | null = null;
   private elapsed = 0;
 
+  // Cho phép GameEngine truyền scene vào (nếu BaseScene chưa có)
+  public scene: THREE.Scene; // public để gán từ bên ngoài
+
   constructor() {
     super('HubScene');
     this.loader = new GLTFLoader();
+    this.scene = new THREE.Scene(); // tạm tạo scene, GameEngine sẽ ghi đè
   }
 
   /**
@@ -353,10 +270,7 @@ export class HubScene extends BaseScene {
     console.log('🌳 HubScene loading...');
 
     try {
-      // Load models
       await this.loadAllModels();
-
-      // Build scene
       this.setupLighting();
       this.setupGround();
       this.setupPaths();
@@ -383,7 +297,7 @@ export class HubScene extends BaseScene {
   }
 
   /**
-   * Update logic mỗi frame
+   * Update logic mỗi frame (được gọi từ BaseScene.update)
    */
   protected onUpdate(deltaTime: number): void {
     this.elapsed += deltaTime;
@@ -406,57 +320,56 @@ export class HubScene extends BaseScene {
     }
   }
 
+  /**
+   * Public method để GameEngine gọi update (tương thích với cách gọi hiện tại)
+   */
+  public update(deltaTime: number): void {
+    // Gọi onUpdate thông qua BaseScene (nếu có) hoặc trực tiếp
+    if (typeof (this as any).onUpdate === 'function') {
+      (this as any).onUpdate(deltaTime);
+    } else {
+      this.onUpdate(deltaTime);
+    }
+  }
+
+  /**
+   * Kiểm tra xem player có đứng trong vùng portal không.
+   * Trả về tên scene nếu có, ngược lại null.
+   */
+  public checkPortals(playerPos: THREE.Vector3): string | null {
+    if (!this.portalMarkers || this.portalMarkers.length === 0) return null;
+    for (const marker of this.portalMarkers) {
+      const dx = playerPos.x - marker.position.x;
+      const dz = playerPos.z - marker.position.z;
+      if (Math.sqrt(dx * dx + dz * dz) < marker.radius) {
+        return marker.targetScene;
+      }
+    }
+    return null;
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Private Setup Methods
   // ─────────────────────────────────────────────────────────────────────────
 
   private async loadAllModels(): Promise<void> {
     const allNames = [
-      'TwistedTree_1',
-      'TwistedTree_2',
-      'TwistedTree_3',
-      'TwistedTree_5',
-      'CommonTree_1',
-      'CommonTree_2',
-      'CommonTree_3',
-      'CommonTree_4',
-      'CommonTree_5',
-      'Pine_1',
-      'Pine_2',
-      'Pine_3',
-      'DeadTree_1',
-      'DeadTree_2',
-      'DeadTree_3',
-      'Bush_Common',
-      'Bush_Common_Flowers',
-      'Fern_1',
-      'Mushroom_Common',
-      'Mushroom_Laetiporus',
-      'Plant_1',
-      'Plant_7',
-      'Rock_Medium_1',
-      'Rock_Medium_2',
-      'Rock_Medium_3',
-      'Grass_Common_Short',
-      'Grass_Common_Tall',
-      'Grass_Wispy_Short',
-      'Grass_Wispy_Tall',
-      'Clover_1',
-      'Clover_2',
-      'Petal_1',
-      'Petal_2',
-      'Pebble_Round_1',
-      'Pebble_Round_2',
-      'Pebble_Round_3',
-      'Pebble_Square_1',
-      'Pebble_Square_2',
-      'Flower_3_Group',
-      'Flower_4_Group',
+      'TwistedTree_1', 'TwistedTree_2', 'TwistedTree_3', 'TwistedTree_5',
+      'CommonTree_1', 'CommonTree_2', 'CommonTree_3', 'CommonTree_4', 'CommonTree_5',
+      'Pine_1', 'Pine_2', 'Pine_3',
+      'DeadTree_1', 'DeadTree_2', 'DeadTree_3',
+      'Bush_Common', 'Bush_Common_Flowers', 'Fern_1',
+      'Mushroom_Common', 'Mushroom_Laetiporus',
+      'Plant_1', 'Plant_7',
+      'Rock_Medium_1', 'Rock_Medium_2', 'Rock_Medium_3',
+      'Grass_Common_Short', 'Grass_Common_Tall', 'Grass_Wispy_Short', 'Grass_Wispy_Tall',
+      'Clover_1', 'Clover_2', 'Petal_1', 'Petal_2',
+      'Pebble_Round_1', 'Pebble_Round_2', 'Pebble_Round_3', 'Pebble_Square_1', 'Pebble_Square_2',
+      'Flower_3_Group', 'Flower_4_Group',
     ];
 
     const unique = [...new Set(allNames)];
     console.log(`📦 HubScene: loading ${unique.length} unique models...`);
-
     this.modelCache = await loadModels(this.loader, unique);
     console.log('✅ Models loaded!');
   }
@@ -481,11 +394,9 @@ export class HubScene extends BaseScene {
     this.warmGlow.position.set(0, 6, 0);
     this.scene.add(this.warmGlow);
 
-    this.scene.add(
-      Object.assign(new THREE.DirectionalLight(0xff8844, 0.3), {
-        position: new THREE.Vector3(10, 20, -10),
-      })
-    );
+    const fillLight = new THREE.DirectionalLight(0xff8844, 0.3);
+    fillLight.position.set(10, 20, -10);
+    this.scene.add(fillLight);
   }
 
   private setupGround(): void {
@@ -536,39 +447,14 @@ export class HubScene extends BaseScene {
   }
 
   private setupTrees(): void {
-    // Define scatter lists
     const TWISTED = ['TwistedTree_1', 'TwistedTree_2', 'TwistedTree_3', 'TwistedTree_5'];
-    const OUTER_TREES = [
-      'CommonTree_1',
-      'CommonTree_2',
-      'CommonTree_3',
-      'CommonTree_4',
-      'CommonTree_5',
-      'Pine_1',
-      'Pine_2',
-      'Pine_3',
-    ];
+    const OUTER_TREES = ['CommonTree_1', 'CommonTree_2', 'CommonTree_3', 'CommonTree_4', 'CommonTree_5', 'Pine_1', 'Pine_2', 'Pine_3'];
     const outerScatter = generateScatter(OUTER_TREES, 40, 40, 68, [1.2, 2.0], 100);
-
     const MID_TREES = ['DeadTree_1', 'DeadTree_2', 'DeadTree_3', 'CommonTree_1'];
     const midScatter = generateScatter(MID_TREES, 18, 18, 38, [1.0, 1.6], 200);
-
-    const CLONE_MODELS = [
-      'Bush_Common',
-      'Bush_Common_Flowers',
-      'Fern_1',
-      'Mushroom_Laetiporus',
-      'Plant_1',
-      'Plant_7',
-      'Rock_Medium_1',
-      'Rock_Medium_2',
-      'Rock_Medium_3',
-      'Pebble_Round_3',
-      'Pebble_Square_2',
-    ];
+    const CLONE_MODELS = ['Bush_Common', 'Bush_Common_Flowers', 'Fern_1', 'Mushroom_Laetiporus', 'Plant_1', 'Plant_7', 'Rock_Medium_1', 'Rock_Medium_2', 'Rock_Medium_3', 'Pebble_Round_3', 'Pebble_Square_2'];
     const cloneScatter = generateScatter(CLONE_MODELS, 40, 6, 55, [0.5, 1.3], 400);
 
-    // Đặt cây đỏ trung tâm
     const centerTree = spawnModel(this.modelCache, 'TwistedTree_1', 0, 0, 0, 5.0, Math.PI * 0.15);
     if (centerTree) this.scene.add(centerTree);
 
@@ -582,77 +468,29 @@ export class HubScene extends BaseScene {
       if (t) this.scene.add(t);
     }
 
-    // Outer ring trees
     for (const item of outerScatter) {
-      const t = spawnModel(
-        this.modelCache,
-        item.modelName,
-        item.x,
-        0,
-        item.z,
-        item.scale,
-        item.rotY
-      );
+      const t = spawnModel(this.modelCache, item.modelName, item.x, 0, item.z, item.scale, item.rotY);
       if (t) this.scene.add(t);
     }
-
-    // Mid ring trees
     for (const item of midScatter) {
-      const t = spawnModel(
-        this.modelCache,
-        item.modelName,
-        item.x,
-        0,
-        item.z,
-        item.scale,
-        item.rotY
-      );
+      const t = spawnModel(this.modelCache, item.modelName, item.x, 0, item.z, item.scale, item.rotY);
       if (t) this.scene.add(t);
     }
-
-    // Clone models
     for (const item of cloneScatter) {
-      const t = spawnModel(
-        this.modelCache,
-        item.modelName,
-        item.x,
-        0,
-        item.z,
-        item.scale,
-        item.rotY,
-        false
-      );
+      const t = spawnModel(this.modelCache, item.modelName, item.x, 0, item.z, item.scale, item.rotY, false);
       if (t) this.scene.add(t);
     }
   }
 
   private setupPortals(): void {
     const PORTAL_DEFS = [
-      {
-        targetScene: 'MainRoadScene',
-        pos: new THREE.Vector3(0, 0, -30),
-        color: 0x00aaff,
-        label: 'Đường Chính',
-      },
-      {
-        targetScene: 'LeftForestScene',
-        pos: new THREE.Vector3(-40, 0, 0),
-        color: 0x00ff88,
-        label: 'Rừng Mật',
-      },
-      {
-        targetScene: 'RightPlatformScene',
-        pos: new THREE.Vector3(40, 0, 0),
-        color: 0xffaa00,
-        label: 'Khu Đá',
-      },
-      {
-        targetScene: 'BossScene',
-        pos: new THREE.Vector3(0, 0, 50),
-        color: 0xff2200,
-        label: 'Boss Arena',
-      },
+      { targetScene: 'MainRoadScene', pos: new THREE.Vector3(0, 0, -30), color: 0x00aaff, label: 'Đường Chính' },
+      { targetScene: 'LeftForestScene', pos: new THREE.Vector3(-40, 0, 0), color: 0x00ff88, label: 'Rừng Mật' },
+      { targetScene: 'RightPlatformScene', pos: new THREE.Vector3(40, 0, 0), color: 0xffaa00, label: 'Khu Đá' },
+      { targetScene: 'BossScene', pos: new THREE.Vector3(0, 0, 50), color: 0xff2200, label: 'Boss Arena' },
     ];
+
+    this.portalMarkers = []; // đảm bảo khởi tạo
 
     for (const def of PORTAL_DEFS) {
       const mesh = createPortalMesh(def.color, def.label);
@@ -662,7 +500,7 @@ export class HubScene extends BaseScene {
 
       this.portalMarkers.push({
         targetScene: def.targetScene,
-        position: def.pos,
+        position: def.pos.clone(),
         radius: 2.5,
         mesh,
       });
