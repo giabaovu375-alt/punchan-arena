@@ -5,17 +5,15 @@ import {
 } from "./types";
 
 export interface AnimationControllerCallbacks {
-  /** Có đang giữ phím di chuyển không (để chọn idle/walk sau khi attack xong) */
   isMoving: () => boolean;
-  /** HUD flash khi combo tăng */
   onComboChanged?: (count: number) => void;
 }
 
 export interface SetupResult {
-  /** Model đã được offset Y cho chân chạm đất */
   modelRoot: THREE.Object3D;
-  /** Chiều cao tham chiếu (để camera anchor ngực) */
   playerHeight: number;
+  /** footOffset để PlayerController.setFloor() dùng */
+  footOffset: number;
 }
 
 export class AnimationController {
@@ -33,23 +31,16 @@ export class AnimationController {
 
   constructor(private cb: AnimationControllerCallbacks) {}
 
-  /**
-   * Gắn model vào parent rig (player Group), tính foot offset để không lún đất,
-   * khởi tạo mixer + clean tracks (filter bone không khớp, loại root translation,
-   * deep-clone để không corrupt clip gốc).
-   */
   setupModel(rig: THREE.Object3D, model: THREE.Group, clips: AnimClipMap): SetupResult {
     model.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         child.castShadow = true;
         child.receiveShadow = true;
-        // skinned mesh frustum culling thường sai → tắt
         (child as THREE.Mesh).frustumCulled = false;
       }
     });
     model.scale.setScalar(1);
 
-    // Đo bbox ở bind pose trong tempScene để matrixWorld chính xác
     const tempScene = new THREE.Scene();
     model.position.set(0, 0, 0);
     model.rotation.set(0, 0, 0);
@@ -70,7 +61,6 @@ export class AnimationController {
 
     this.mixer = new THREE.AnimationMixer(model);
 
-    // Tên các node trong model để filter track không khớp
     const nodeNames = new Set<string>();
     model.traverse(n => { if (n.name) nodeNames.add(n.name); });
 
@@ -78,8 +68,6 @@ export class AnimationController {
       const src = clips[key];
       if (!src) continue;
 
-      // THREE.AnimationClip.clone() là SHALLOW → tracks share Float32Array
-      // → deep clone từng track
       const tracks = src.tracks
         .filter(t => nodeNames.has(t.name.split(".")[0]))
         .filter(t => {
@@ -130,44 +118,67 @@ export class AnimationController {
         this.isAttacking = false;
         this.attackCooldown = 0.3;
         this.currentAction = null;
-        this.playAnim(this.cb.isMoving() ? "walk" : "idle", 0);
+        this.playAnim(this.cb.isMoving() ? "walk" : "idle", 0.15);
       }
     });
 
     const startKey: AnimKey = this.actions.idle ? "idle"
       : this.actions.walk ? "walk"
       : (this.fallbackAnimKey ?? "idle");
-    this.playAnim(startKey, 0);
-    this.mixer.update(0.016);
 
-    return { modelRoot: model, playerHeight };
+    // ── Fix T-pose: warm up mixer trước khi render frame đầu ──────────────
+    const startAction = this.actions[startKey];
+    if (startAction) {
+      startAction.enabled = true;
+      startAction.setEffectiveWeight(1);
+      startAction.setEffectiveTimeScale(1);
+      startAction.play();
+      this.currentAction = startAction;
+      this.currentKey = startKey;
+    }
+    // Warm up 3 tick để bones có giá trị trước frame đầu
+    this.mixer.update(0);
+    this.mixer.update(0.001);
+    this.mixer.update(0.001);
+
+    return { modelRoot: model, playerHeight, footOffset };
   }
 
-  playAnim(key: AnimKey, _fade = 0.2) {
+  playAnim(key: AnimKey, fade = 0.15) {
     if (!this.mixer) return;
     let next = this.actions[key];
     if (!next && this.fallbackAnimKey) next = this.actions[this.fallbackAnimKey];
     if (!next) return;
     if (this.currentAction === next && next.isRunning()) return;
 
-    // Stop tất cả action khác — tránh multiple action chạy đồng thời → T-pose
-    for (const a of Object.values(this.actions)) {
-      if (a && a !== next) { a.stop(); a.enabled = false; }
+    const prev = this.currentAction;
+
+    // ── Fix T-pose: crossfade thay vì stop-all rồi play ───────────────────
+    if (prev && prev !== next && fade > 0) {
+      const needReset = COMBAT_ANIMS.has(key) || key === "jump";
+      if (needReset) next.reset();
+      next.enabled = true;
+      next.setEffectiveWeight(1);
+      next.setEffectiveTimeScale(1);
+      prev.crossFadeTo(next, fade, true);
+      next.play();
+    } else {
+      // instant switch (fade = 0) — vẫn dùng cho attack/combo
+      for (const a of Object.values(this.actions)) {
+        if (a && a !== next) { a.stop(); a.enabled = false; }
+      }
+      next.reset();
+      next.enabled = true;
+      next.setEffectiveWeight(1);
+      next.setEffectiveTimeScale(1);
+      next.play();
     }
 
     this.currentAction = next;
     this.currentKey = key;
-
-    const needReset = COMBAT_ANIMS.has(key) || key === "jump" || !next.isRunning();
-    if (needReset) next.reset();
-    next.enabled = true;
-    next.setEffectiveWeight(1);
-    next.setEffectiveTimeScale(1);
-    next.play();
   }
 
   triggerAttack(key: AnimKey) {
-    // Đang attack → thử chain combo
     if (this.isAttacking) {
       const combo = COMBO_CHAIN[this.currentKey];
       if (combo && this.actions[combo]) {
@@ -188,7 +199,6 @@ export class AnimationController {
     this.cb.onComboChanged?.(this.comboCount);
   }
 
-  /** Gọi mỗi frame; trả về có đang attack không (để PlayerController biết) */
   update(dt: number): { isAttacking: boolean } {
     if (this.attackCooldown > 0) this.attackCooldown -= dt;
 
@@ -204,13 +214,12 @@ export class AnimationController {
     return { isAttacking: this.isAttacking };
   }
 
-  /** Locomotion fallback (idle/walk/run/jump) khi không attack */
   drive(moving: boolean, sprinting: boolean, onGround: boolean) {
     if (this.isAttacking) return;
-    if (!onGround)            this.playAnim("jump", 0.15);
-    else if (moving && sprinting) this.playAnim("run", 0.25);
-    else if (moving)              this.playAnim("walk", 0.25);
-    else                          this.playAnim("idle", 0.35);
+    if (!onGround)                this.playAnim("jump", 0.15);
+    else if (moving && sprinting) this.playAnim("run",  0.2);
+    else if (moving)              this.playAnim("walk", 0.2);
+    else                          this.playAnim("idle", 0.25);
   }
 
   getMixer() { return this.mixer; }
