@@ -8,13 +8,6 @@ export interface PlayerControllerOpts {
   onAttack: (key: AnimKey) => void;
 }
 
-/**
- * Quản lý: input keyboard, vector velocity, movement, jump, gravity,
- * world bounds, stamina drain/regen, HP (visual).
- *
- * Mobile UI ghi trực tiếp vào `input` (joystick) và gọi `requestJump()`,
- * `onAttack()` để giữ 1 nguồn sự thật duy nhất.
- */
 export class PlayerController {
   readonly input: InputState = {
     forward: false, backward: false, left: false,
@@ -28,15 +21,14 @@ export class PlayerController {
   private jumpSpeed: number;
   private sprintMultiplier = 1.8;
   private gravity = -22;
-  private playerFloor = 0;
+  private playerFloor = 0; // sẽ được set qua setFloor()
 
-  stamina = 1; // 0..1
-  hp = 1;      // visual only
+  stamina = 1;
+  hp = 1;
 
   private worldRadius: number;
   private onAttack: (key: AnimKey) => void;
 
-  // scratch vectors — tránh new mỗi frame
   private _fwd  = new THREE.Vector3();
   private _rgt  = new THREE.Vector3();
   private _move = new THREE.Vector3();
@@ -46,6 +38,14 @@ export class PlayerController {
     this.jumpSpeed   = opts.character.jumpSpeed;
     this.worldRadius = opts.worldRadius;
     this.onAttack    = opts.onAttack;
+  }
+
+  /**
+   * Gọi sau setupModel() với footOffset từ SetupResult.
+   * PlayerController giữ player.position.y = floor đúng chỗ.
+   */
+  setFloor(y: number) {
+    this.playerFloor = y;
   }
 
   bindKeyboard() {
@@ -97,10 +97,6 @@ export class PlayerController {
     return this.input.forward || this.input.backward || this.input.left || this.input.right;
   }
 
-  /**
-   * Cập nhật vị trí + xoay player theo camera yaw.
-   * Trả về snapshot dùng cho animation driver.
-   */
   update(dt: number, cameraYaw: number, player: THREE.Object3D): {
     moving: boolean; sprinting: boolean; onGround: boolean;
   } {
@@ -135,6 +131,7 @@ export class PlayerController {
     this.velocity.y += this.gravity * dt;
     player.position.addScaledVector(this.velocity, dt);
 
+    // ── Fix lún đất: dùng playerFloor thay vì cứng 0 ──────────────────────
     if (player.position.y <= this.playerFloor + 0.05) {
       player.position.y = this.playerFloor;
       this.velocity.y = 0;
