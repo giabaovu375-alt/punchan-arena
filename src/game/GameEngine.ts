@@ -16,12 +16,8 @@ import {
   type IntroSceneHandles,
 } from "./IntroScene";
 
-// Hub scene
-import {
-  buildHubScene,
-  HUB_SPAWN,
-  type HubSceneHandles,
-} from "./scenes/HubScene";
+// Hub scene (class)
+import { HubScene } from "./scenes/HubScene";
 
 // Event system
 import { eventBus } from "./core/EventBus";
@@ -64,7 +60,7 @@ export class GameEngine {
   // Scene management
   private sceneMode: SceneMode = "intro";
   private introHandles: IntroSceneHandles | null = null;
-  private hubHandles: HubSceneHandles | null = null;
+  private hubScene: HubScene | null = null;   // ✅ Thay vì hubHandles
   private npcTriggered = false;
   private lastPortalTarget: string | null = null;
 
@@ -181,24 +177,36 @@ export class GameEngine {
     this.clearScene();
     this.introHandles = buildIntroScene(this.scene, this.isMobile);
     this.playerCtrl.setColliders([]);
-    // ✅ Dùng .copy() thay vì gán =
     if (this.player?.position && PLAYER_SPAWN) {
       this.player.position.copy(PLAYER_SPAWN);
     }
     this.sceneMode = "intro";
     this.npcTriggered = false;
-    this.hubHandles = null;
+    this.hubScene = null;            // ✅ xóa instance hub cũ
     this.lastPortalTarget = null;
   }
 
-  private switchToHub() {
+  private async switchToHub() {
     this.clearScene();
-    this.hubHandles = buildHubScene(this.scene, this.isMobile);
-    this.playerCtrl.setColliders([]);
-    // ✅ Dùng .copy()
-    if (this.player?.position && HUB_SPAWN) {
-      this.player.position.copy(HUB_SPAWN);
+  
+    // ✅ Tạo instance HubScene và gán scene chung
+    const hub = new HubScene();
+    // Quan trọng: HubScene dùng this.scene để thêm object, ta phải trỏ đúng scene của GameEngine
+    (hub as any).scene = this.scene;   // nếu HubScene không có setter public, ta tạm dùng any
+    
+    try {
+      await hub.load();                // load models, dựng scene
+    } catch (err) {
+      console.error("❌ Không load được HubScene:", err);
+      return;
     }
+  
+    this.hubScene = hub;
+    this.playerCtrl.setColliders([]);
+  
+    // Spawn player ở giữa hub (tọa độ như HUB_SPAWN cũ)
+    this.player.position.copy(new THREE.Vector3(0, 0, 30));
+  
     this.sceneMode = "hub";
     this.introHandles = null;
     this.lastPortalTarget = null;
@@ -326,18 +334,19 @@ export class GameEngine {
           INTRO_NPC_DIALOGUE.npcName,
           INTRO_NPC_DIALOGUE.lines,
           () => {
-            fadeToWhite(this.container, () => this.switchToHub());
+            // ✅ switchToHub là async, dùng async wrapper
+            fadeToWhite(this.container, () => {
+              this.switchToHub().catch(err => console.error(err));
+            });
           },
         );
       }
-    } else if (this.sceneMode === "hub" && this.hubHandles) {
-      // ✅ Gọi tick nếu tồn tại
-      if (typeof this.hubHandles.tick === "function") {
-        this.hubHandles.tick(dt);
-      }
+    } else if (this.sceneMode === "hub" && this.hubScene) {
+      // ✅ Gọi update của HubScene (class)
+      this.hubScene.update(dt);   // thực chất gọi onUpdate bên trong
 
-      if (!locked && !isAttacking && typeof this.hubHandles.checkPortals === "function") {
-        const target = this.hubHandles.checkPortals(this.player.position);
+      if (!locked && !isAttacking) {
+        const target = this.hubScene.checkPortals(this.player.position);
         if (target) {
           if (target !== this.lastPortalTarget) {
             this.lastPortalTarget = target;
@@ -397,4 +406,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-}
+  }
