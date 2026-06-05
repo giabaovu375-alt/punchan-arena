@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { GameEngine, type AnimKey, type AnimClipMap } from "@/game/GameEngine";
-import { MobileUI } from "@/game/MobileUI";
 import { CharacterSelect } from "@/components/CharacterSelect";
 import { CHARACTERS, type CharacterDef, type CharacterId } from "@/game/characters";
 import * as THREE from "three";
@@ -110,7 +109,6 @@ export function GameCanvas() {
 
     let isCancelled = false;
     let engine: GameEngine | null = null;
-    let mobileUI: MobileUI | null = null;
 
     const initEngine = async () => {
       if (!ref.current) return;
@@ -132,29 +130,15 @@ export function GameCanvas() {
       }
 
       engine = instance;
-
-      // ── Chỉ gắn MobileUI trên thiết bị cảm ứng ──────────────────────────
-      const isTouchDevice = navigator.maxTouchPoints > 0 || "ontouchstart" in window;
-      if (isTouchDevice) {
-        mobileUI = new MobileUI(
-          ref.current,          // container (div bọc canvas)
-          ref.current,          // rendererEl – cùng element để bắt camera touch
-          instance.inputState,  // InputState expose từ GameEngine
-          {
-            jump:         ()      => instance.triggerJump(),
-            attack:       (key)   => instance.triggerAttack(key),
-            rotateCamera: (dy, dp) => instance.rotateCamera(dy, dp),
-          },
-        );
-      }
+      // MobileUI được GameEngine tự khởi tạo bên trong constructor,
+      // không cần làm gì thêm ở đây.
     };
 
     initEngine().catch((err) => console.error("Lỗi khởi tạo Engine:", err));
 
     return () => {
       isCancelled = true;
-      mobileUI?.dispose();
-      engine?.dispose();
+      engine?.dispose(); // dispose engine sẽ tự gọi mobileUI.dispose() bên trong
     };
   }, [stage, selectedId]);
 
@@ -358,5 +342,4 @@ function Hud({ character, onExit }: { character: CharacterDef; onExit: () => voi
       </button>
     </>
   );
-        }
-            
+}
