@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { GameEngine, type AnimKey, type AnimClipMap } from "@/game/GameEngine";
+import { MobileUI } from "@/game/MobileUI";
 import { CharacterSelect } from "@/components/CharacterSelect";
 import { CHARACTERS, type CharacterDef, type CharacterId } from "@/game/characters";
 import * as THREE from "three";
@@ -106,9 +107,14 @@ export function GameCanvas() {
 
   useEffect(() => {
     if (stage !== "playing" || !ref.current || !selectedId) return;
+
     let isCancelled = false;
     let engine: GameEngine | null = null;
+    let mobileUI: MobileUI | null = null;
+
     const initEngine = async () => {
+      if (!ref.current) return;
+
       const char        = CHARACTERS.find((c) => c.id === selectedId)!;
       const cachedModel = modelCache.get(char.modelUrl);
       const model       = cachedModel ? cloneModel(cachedModel) : null;
@@ -117,11 +123,39 @@ export function GameCanvas() {
         const clip = clipCache.get(key);
         if (clip) clips[key] = clip;
       }
-      const instance = await GameEngine.create(ref.current!, char, model, clips);
-      if (isCancelled) { instance.dispose(); } else { engine = instance; }
+
+      const instance = await GameEngine.create(ref.current, char, model, clips);
+
+      if (isCancelled) {
+        instance.dispose();
+        return;
+      }
+
+      engine = instance;
+
+      // ── Chỉ gắn MobileUI trên thiết bị cảm ứng ──────────────────────────
+      const isTouchDevice = navigator.maxTouchPoints > 0 || "ontouchstart" in window;
+      if (isTouchDevice) {
+        mobileUI = new MobileUI(
+          ref.current,          // container (div bọc canvas)
+          ref.current,          // rendererEl – cùng element để bắt camera touch
+          instance.inputState,  // InputState expose từ GameEngine
+          {
+            jump:         ()      => instance.triggerJump(),
+            attack:       (key)   => instance.triggerAttack(key),
+            rotateCamera: (dy, dp) => instance.rotateCamera(dy, dp),
+          },
+        );
+      }
     };
+
     initEngine().catch((err) => console.error("Lỗi khởi tạo Engine:", err));
-    return () => { isCancelled = true; engine?.dispose(); };
+
+    return () => {
+      isCancelled = true;
+      mobileUI?.dispose();
+      engine?.dispose();
+    };
   }, [stage, selectedId]);
 
   const handleSelect = (c: CharacterDef) => {
@@ -324,5 +358,5 @@ function Hud({ character, onExit }: { character: CharacterDef; onExit: () => voi
       </button>
     </>
   );
-      }
+        }
             
