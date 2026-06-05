@@ -23,23 +23,28 @@ export class MobileUI {
     rendererEl: HTMLElement,
     private input: InputState,
     private cb: MobileUICallbacks,
-    // Đường dẫn dải ảnh sấm sét dọc (Sprite Sheet) của dự án
-    private spriteSheetImage: string = "/assets/ui/1000185469.png"
+    spriteUrl: string = "/assets/ui/1000185469.png"
   ) {
     this.rendererEl = rendererEl;
 
+    // Tạo container bao ngoài cho toàn bộ UI Mobile
     const ui = document.createElement("div");
     Object.assign(ui.style, {
-      position: "absolute", inset: "0", pointerEvents: "none",
-      zIndex: "10", userSelect: "none", WebkitUserSelect: "none",
+      position: "absolute",
+      inset: "0",
+      pointerEvents: "none",
+      zIndex: "10",
+      userSelect: "none",
+      WebkitUserSelect: "none",
     } as CSSStyleDeclaration);
     container.appendChild(ui);
     this.root = ui;
 
+    // Dựng các thành phần giao diện
     const joyWrap = this.buildJoystick(ui);
-    this.buildActionButtons(ui);
+    this.buildActionButtons(ui, spriteUrl);
 
-    // Joystick start
+    // ── XỬ LÝ TOUCH JOYSTICK DI CHUYỂN ───────────────────────────────────────
     joyWrap.addEventListener("touchstart", (e) => {
       e.preventDefault();
       const t = e.changedTouches[0];
@@ -53,21 +58,18 @@ export class MobileUI {
       };
     }, { passive: false });
 
-    // Touch move (Cố định tâm Joystick & Camera Drag tự nhiên)
+    // Lắng nghe sự kiện di chuyển ngón tay (Cho cả Joystick và Xoay Camera)
     this.touchMoveHandler = (e) => {
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i];
 
-        // Xử lý di chuyển Joystick
+        // Nếu là ngón tay đang giữ Joystick
         if (this.joystick.active && t.identifier === this.joystick.touchId) {
-          const MAX = 48;
-          // Tính khoảng cách delta dựa trên tâm xuất phát cố định ban đầu
+          const MAX = 42; // Giới hạn biên độ kéo của núm xoay
           let dx = t.clientX - this.joystick.startX;
           let dy = t.clientY - this.joystick.startY;
-
           const d = Math.hypot(dx, dy);
           
-          // Khóa biên hiển thị của núm (knob) chứ KHÔNG kéo dịch chuyển tâm startX/startY
           if (d > MAX) {
             dx *= MAX / d;
             dy *= MAX / d;
@@ -80,14 +82,15 @@ export class MobileUI {
             this.joystickKnobEl.style.transform = `translate(${dx}px,${dy}px)`;
           }
 
-          const nx = dx / MAX, ny = dy / MAX, DZ = 0.18;
+          // Cập nhật trạng thái input di chuyển cho PlayerController
+          const nx = dx / MAX, ny = dy / MAX, DZ = 0.2;
           this.input.forward  = ny < -DZ;
           this.input.backward = ny >  DZ;
           this.input.left     = nx < -DZ;
           this.input.right    = nx >  DZ;
         }
 
-        // Xử lý góc xoay Camera
+        // Nếu là ngón tay đang vuốt màn hình bên phải để xoay Camera
         if (this.cameraTouch && t.identifier === this.cameraTouch.id) {
           const dYaw   = -(t.clientX - this.cameraTouch.lastX) * 0.006;
           const dPitch = -(t.clientY - this.cameraTouch.lastY) * 0.006;
@@ -100,7 +103,7 @@ export class MobileUI {
     };
     window.addEventListener("touchmove", this.touchMoveHandler, { passive: true });
 
-    // Touch end
+    // Nhấc ngón tay ra khỏi màn hình
     this.touchEndHandler = (e) => {
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i];
@@ -116,11 +119,13 @@ export class MobileUI {
     };
     window.addEventListener("touchend", this.touchEndHandler);
 
-    // Camera touch start
+    // Kích hoạt vùng chạm xoay camera ở nửa màn hình bên phải
     this.rendererTouchStart = (e) => {
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i];
         const target = e.target as HTMLElement;
+        
+        // Tránh xung đột chạm khi nhấn trúng các nút chiêu thức
         if (target && target.style && window.getComputedStyle(target).pointerEvents === "all") {
           continue;
         }
@@ -132,14 +137,14 @@ export class MobileUI {
     rendererEl.addEventListener("touchstart", this.rendererTouchStart, { passive: true });
   }
 
-  // ── Giao diện Joystick ────────────────────────────────────────────────
+  // ── DỰNG ĐẾ VÀ NÚM XOAY JOYSTICK ──────────────────────────────────────────
   private buildJoystick(ui: HTMLElement): HTMLElement {
     const wrap = document.createElement("div");
     Object.assign(wrap.style, {
       position: "absolute",
-      bottom: "max(32px, env(safe-area-inset-bottom,32px))",
-      left:   "max(32px, env(safe-area-inset-left,32px))",
-      width:  "120px", height: "120px", borderRadius: "50%",
+      bottom: "max(24px, env(safe-area-inset-bottom,24px))",
+      left:   "max(24px, env(safe-area-inset-left,24px))",
+      width:  "110px", height: "110px", borderRadius: "50%",
       pointerEvents: "all", touchAction: "none",
       display: "flex", alignItems: "center", justifyContent: "center",
     });
@@ -147,98 +152,84 @@ export class MobileUI {
     const base = document.createElement("div");
     Object.assign(base.style, {
       position: "absolute", inset: "0", borderRadius: "50%",
-      background: "radial-gradient(circle at 50% 50%, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.06) 80%)",
-      border: "1.5px solid rgba(255,255,255,0.1)",
-      boxShadow: "0 8px 32px rgba(0,0,0,0.5), inset 0 0 16px rgba(0,0,0,0.3)",
-      backdropFilter: "blur(12px)",
-      WebkitBackdropFilter: "blur(12px)",
-    });
-
-    const ring = document.createElement("div");
-    Object.assign(ring.style, {
-      position: "absolute", inset: "10px", borderRadius: "50%",
-      border: "1px dashed rgba(255,255,255,0.15)",
+      background: "radial-gradient(circle, rgba(255,255,255,0.02) 0%, rgba(0,0,0,0.45) 85%)",
+      border: "2px solid rgba(255,255,255,0.2)",
+      backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
     });
 
     const knob = document.createElement("div");
     Object.assign(knob.style, {
-      width: "52px", height: "52px", borderRadius: "50%",
-      background: "radial-gradient(circle at 35% 30%, #ffffff 0%, #899bb0 90%)",
-      border: "1.5px solid rgba(255,255,255,0.8)",
-      boxShadow: "0 6px 16px rgba(0,0,0,0.6), inset 0 -3px 6px rgba(0,0,0,0.3)",
-      transition: "transform 0.04s ease-out",
+      width: "48px", height: "48px", borderRadius: "50%",
+      background: "linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%)",
+      border: "1.5px solid #fff",
+      boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
     });
 
     wrap.appendChild(base);
-    wrap.appendChild(ring);
     wrap.appendChild(knob);
     ui.appendChild(wrap);
     this.joystickKnobEl = knob;
     return wrap;
   }
 
-  // ── Nút chiêu thức (Cắt tâm Sprite Sheet sấm sét) ──────────────────────
-  private buildActionButtons(ui: HTMLElement) {
-    const SIZE = 68;
+  // ── CẮT SPRITE SHEET CHUẨN XÁC THEO TỶ LỆ DẢI DỌC ────────────────────────
+  private buildActionButtons(ui: HTMLElement, spriteUrl: string) {
+    const SIZE = 64; // Đường kính nút
     const GAP = 14;
-    const RIGHT = 32;
-    const BOTTOM = 90;
+    const RIGHT = 24;
+    const BOTTOM = 50;
 
-    // Tỷ lệposY tính toán chuẩn xác để ẩn viền đen/chữ số, lấy trọn lõi năng lượng sấm sét
+    // Cấu hình toạ độ layout nút chiến đấu góc phải và thứ tự ô tương ứng trong Sprite Sheet dọc (0 -> 4)
     const buttons = [
-      { id: "punch",   posY: "1.5%",  fn: () => this.cb.attack("punch"),   bottom: BOTTOM,              right: RIGHT + SIZE + GAP },
-      { id: "kick",    posY: "25.8%", fn: () => this.cb.attack("kick"),    bottom: BOTTOM,              right: RIGHT },
-      { id: "special", posY: "50.0%", fn: () => this.cb.attack("mmaKick"), bottom: BOTTOM + SIZE + GAP, right: RIGHT + SIZE + GAP },
-      { id: "sprint",  posY: "74.3%", fn: () => this.toggleSprint(),        bottom: BOTTOM + SIZE*2 + GAP*2, right: RIGHT + SIZE/2 },
-      { id: "jump",    posY: "98.5%", fn: () => this.cb.jump(),          bottom: BOTTOM + SIZE + GAP, right: RIGHT + SIZE/2 },
+      { id: "punch",   frameY: 0, color: "#a5f3fc", fn: () => this.cb.attack("punch"),   bottom: BOTTOM + SIZE/2 + GAP,     right: RIGHT + SIZE * 1.5 + GAP * 1.5 },
+      { id: "kick",    frameY: 1, color: "#f472b6", fn: () => this.cb.attack("kick"),    bottom: BOTTOM,                    right: RIGHT + SIZE + GAP },
+      { id: "special", frameY: 2, color: "#c084fc", fn: () => this.cb.attack("mmaKick"), bottom: BOTTOM + SIZE * 1.25 + GAP * 2, right: RIGHT + SIZE * 0.75 + GAP },
+      { id: "sprint",  frameY: 3, color: "#2dd4bf", fn: () => this.toggleSprint(),       bottom: BOTTOM + SIZE * 2.25 + GAP * 3, right: RIGHT },
+      { id: "jump",    frameY: 4, color: "#facc15", fn: () => this.cb.jump(),            bottom: BOTTOM,                    right: RIGHT },
     ];
 
     for (const btn of buttons) {
-      const el = document.createElement("div");
-      el.setAttribute("data-id", btn.id);
-      el.style.cssText = `
+      const btnEl = document.createElement("div");
+      btnEl.setAttribute("data-id", btn.id);
+      
+      // Thuật toán ghim cứng tỷ lệ ảnh: Rộng bằng kích thước nút, Cao x5 lần tương đương 500% dải ô
+      // Dịch chuyển Y chính xác theo từng nấc ô: -(chỉ_số_ô * 100)%
+      btnEl.style.cssText = `
         position: absolute;
         bottom: ${btn.bottom}px;
         right: ${btn.right}px;
         width: ${SIZE}px;
         height: ${SIZE}px;
         border-radius: 50%;
-        
-        /* Trích xuất 1 ô độc lập từ Sprite Sheet dải dọc */
-        background-image: url(${this.spriteSheetImage});
-        background-size: 100% 510%;
-        background-position: center ${btn.posY};
+        background-image: url('${spriteUrl}');
+        background-size: 100% 500%;
+        background-position: 0% -${btn.frameY * 100}%;
         background-repeat: no-repeat;
-        
-        background-color: rgba(10, 15, 30, 0.65);
-        border: 2px solid rgba(255, 255, 255, 0.2);
-        backdrop-filter: blur(8px);
-        WebkitBackdropFilter: blur(8px);
+        box-shadow: 0 4px 10px rgba(0,0,0,0.5), inset 0 2px 4px rgba(255,255,255,0.1);
         pointer-events: all;
         touch-action: none;
-        box-shadow: 0 6px 16px rgba(0,0,0,0.4), inset 0 0 10px rgba(255,255,255,0.05);
-        transition: transform 0.1s cubic-bezier(0.25, 1, 0.5, 1), box-shadow 0.1s ease, border-color 0.1s ease;
+        transition: transform 0.05s ease, filter 0.05s ease;
       `;
 
-      el.addEventListener("touchstart", (e) => {
+      // Hiệu ứng phản hồi xúc giác khi nhấp nút (Phát sáng Neon dựa theo mã màu đặc trưng)
+      btnEl.addEventListener("touchstart", (e) => {
         e.preventDefault();
-        el.style.transform = "scale(0.88)";
-        el.style.borderColor = "rgba(0, 168, 255, 0.8)";
-        el.style.boxShadow = "0 0 20px rgba(0, 168, 255, 0.6), inset 0 0 12px rgba(255,255,255,0.1)";
+        btnEl.style.transform = "scale(0.88)";
+        btnEl.style.filter = `drop-shadow(0 0 12px ${btn.color}) brightness(1.3)`;
         btn.fn();
       }, { passive: false });
 
-      el.addEventListener("touchend", () => {
-        el.style.transform = "scale(1)";
-        el.style.borderColor = "rgba(255, 255, 255, 0.2)";
-        el.style.boxShadow = "0 6px 16px rgba(0,0,0,0.4), inset 0 0 10px rgba(255,255,255,0.05)";
+      btnEl.addEventListener("touchend", () => {
+        btnEl.style.transform = "scale(1)";
+        if (btn.id === "sprint" && this.sprintActive) return; // Nếu đang bật sprint thì giữ trạng thái sáng đèn
+        btnEl.style.filter = "none";
       });
 
-      ui.appendChild(el);
+      ui.appendChild(btnEl);
     }
   }
 
-  // ── Xử lý kích hoạt trạng thái Chạy Nhanh (Sprint) ──────────────────────
+  // ── XỬ LÝ TRẠNG THÁI KHÓA/MỞ NÚT CHẠY NHANH ─────────────────────────────────
   private toggleSprint() {
     this.sprintActive = !this.sprintActive;
     this.input.sprint = this.sprintActive;
@@ -246,17 +237,16 @@ export class MobileUI {
     const sprintBtn = this.root.querySelector('[data-id="sprint"]') as HTMLElement;
     if (sprintBtn) {
       if (this.sprintActive) {
-        sprintBtn.style.backgroundColor = "rgba(0, 168, 255, 0.25)";
-        sprintBtn.style.borderColor = "#00a8ff";
-        sprintBtn.style.boxShadow = "0 0 24px rgba(0, 140, 255, 0.7), inset 0 0 8px rgba(255,255,255,0.2)";
+        sprintBtn.style.filter = `drop-shadow(0 0 16px #2dd4bf) brightness(1.4)`;
+        sprintBtn.style.transform = "scale(0.92)";
       } else {
-        sprintBtn.style.backgroundColor = "rgba(10, 15, 30, 0.6)";
-        sprintBtn.style.borderColor = "rgba(255, 255, 255, 0.2)";
-        sprintBtn.style.boxShadow = "0 6px 16px rgba(0,0,0,0.4), inset 0 0 10px rgba(255,255,255,0.05)";
+        sprintBtn.style.filter = "none";
+        sprintBtn.style.transform = "scale(1)";
       }
     }
   }
 
+  // Dọn dẹp bộ nhớ và gỡ bỏ Event khi hủy Object tránh rò rỉ (Memory Leak)
   dispose() {
     window.removeEventListener("touchmove", this.touchMoveHandler);
     window.removeEventListener("touchend",  this.touchEndHandler);
