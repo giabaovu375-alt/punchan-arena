@@ -77,10 +77,7 @@ export class GameEngine {
   private _tgt       = new THREE.Vector3();
   private _camTarget = new THREE.Vector3();
 
-  /**
-   * Chuyển constructor về dạng private để ép việc khởi tạo phải đi qua hàm tĩnh `create()`
-   */
-  private constructor(
+  constructor(
     container: HTMLElement,
     character: CharacterDef,
     model: THREE.Group | null,
@@ -169,46 +166,70 @@ export class GameEngine {
       );
     }
 
+    // ── Preload asset rồi mới bắt đầu game ────────────────────────────────
     this.assetManager = new AssetManager();
-  }
-
-  /**
-   * Hàm khởi tạo Engine tĩnh bất đồng bộ, giải quyết triệt để lỗi bất đồng bộ vòng đời
-   */
-  public static async create(
-    container: HTMLElement,
-    character: CharacterDef,
-    model: THREE.Group | null,
-    clips: AnimClipMap,
-  ): Promise<GameEngine> {
-    const engine = new GameEngine(container, character, model, clips);
-    await engine.initGame();
-    return engine;
+    this.initGame();   // async, không block constructor
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // PRELOAD & INIT
+  // PRELOAD & INIT (CÓ ẢNH LOADING)
   // ═══════════════════════════════════════════════════════════════════════════
   private async initGame() {
+    // Tạo màn hình loading
     const loadingEl = document.createElement("div");
-    loadingEl.textContent = "Đang tải dữ liệu... 0%";
     loadingEl.style.cssText = `
-      position: absolute; top: 50%; left: 50%;
-      transform: translate(-50%, -50%);
-      color: #fff; font-size: 24px; z-index: 100;
-      font-family: sans-serif; pointer-events: none;
-      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #0a0a14;
+      z-index: 100; pointer-events: none;
     `;
+
+    // Ảnh loading (logo hoặc ảnh tùy chỉnh)
+    const img = document.createElement("img");
+    img.src = "/assets/ui/loading-bg.png";   // ← cậu thay bằng đường dẫn ảnh load của mình
+    img.style.cssText = `
+      width: 200px; height: auto; margin-bottom: 24px;
+      image-rendering: crisp-edges;
+    `;
+    loadingEl.appendChild(img);
+
+    // Thanh tiến trình
+    const progressContainer = document.createElement("div");
+    progressContainer.style.cssText = `
+      width: 200px; height: 6px; background: rgba(255,255,255,0.12);
+      border-radius: 999px; overflow: hidden;
+    `;
+
+    const progressBar = document.createElement("div");
+    progressBar.style.cssText = `
+      height: 100%; width: 0%; background: #00a8ff;
+      border-radius: 999px; transition: width 0.15s ease;
+      box-shadow: 0 0 12px #00a8ff;
+    `;
+    progressContainer.appendChild(progressBar);
+    loadingEl.appendChild(progressContainer);
+
+    // Text tiến trình
+    const progressText = document.createElement("div");
+    progressText.style.cssText = `
+      margin-top: 8px; color: rgba(255,255,255,0.7); font-size: 14px;
+      font-family: sans-serif;
+    `;
+    loadingEl.appendChild(progressText);
+
     this.container.appendChild(loadingEl);
 
-    // Chờ cho đến khi toàn bộ cây cối, tảng đá nằm yên vị trong RAM
+    // Preload toàn bộ asset
     await this.assetManager.preloadAll((loaded, total) => {
-      loadingEl.textContent = `Đang tải... ${Math.round((loaded / total) * 100)}%`;
+      const pct = Math.round((loaded / total) * 100);
+      progressBar.style.width = `${pct}%`;
+      progressText.textContent = `Đang tải... ${pct}%`;
     });
 
+    // Xoá loading
     loadingEl.remove();
 
-    // Tài nguyên sẵn sàng -> dựng map và kích hoạt render loop
+    // Bắt đầu game
     this.loadIntroScene();
     this.start();
   }
@@ -235,7 +256,6 @@ export class GameEngine {
     this.clearThreeScene(this.scene);
     this.scene.add(this.player);
 
-    // Truyền trực tiếp instance assetManager vào để IntroScene có thể rút model cây ra dùng
     this.introHandles = buildIntroScene(this.scene, this.isMobile);
     this.playerCtrl.setColliders([]);
 
@@ -486,5 +506,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-  }
-  
+          }
