@@ -1,5 +1,4 @@
 import type { InputState, AnimKey } from "./types";
-import type { ScreenManager } from "./core/ScreenManager";
 
 export interface MobileUICallbacks {
   jump: () => void;
@@ -18,26 +17,16 @@ export class MobileUI {
   private touchEndHandler: (e: TouchEvent) => void;
   private rendererTouchStart: (e: TouchEvent) => void;
   private rendererEl: HTMLElement;
-  private screenManager: ScreenManager;
 
   constructor(
     container: HTMLElement,
     rendererEl: HTMLElement,
     private input: InputState,
     private cb: MobileUICallbacks,
-    screenManager: ScreenManager,
-    // Đường dẫn ảnh cho từng nút (tùy nhân vật)
-    private buttonImages?: {
-      jump?: string;
-      punch?: string;
-      kick?: string;
-      special?: string;
-      sprint?: string;
-      sprintActive?: string; // ảnh khi sprint đang bật
-    }
+    // Đường dẫn dải ảnh sấm sét dọc (Sprite Sheet) của dự án
+    private spriteSheetImage: string = "/assets/ui/1000185469.png"
   ) {
     this.rendererEl = rendererEl;
-    this.screenManager = screenManager;
 
     const ui = document.createElement("div");
     Object.assign(ui.style, {
@@ -64,37 +53,32 @@ export class MobileUI {
       };
     }, { passive: false });
 
-    // Touch move (joystick + camera drag)
+    // Touch move (Cố định tâm Joystick & Camera Drag tự nhiên)
     this.touchMoveHandler = (e) => {
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i];
 
+        // Xử lý di chuyển Joystick
         if (this.joystick.active && t.identifier === this.joystick.touchId) {
           const MAX = 48;
-          let rawDx = t.clientX - this.joystick.startX;
-          let rawDy = t.clientY - this.joystick.startY;
+          // Tính khoảng cách delta dựa trên tâm xuất phát cố định ban đầu
+          let dx = t.clientX - this.joystick.startX;
+          let dy = t.clientY - this.joystick.startY;
 
-          const d = Math.hypot(rawDx, rawDy);
+          const d = Math.hypot(dx, dy);
+          
+          // Khóa biên hiển thị của núm (knob) chứ KHÔNG kéo dịch chuyển tâm startX/startY
           if (d > MAX) {
-            rawDx *= MAX / d;
-            rawDy *= MAX / d;
-            this.joystick.startX = t.clientX - rawDx;
-            this.joystick.startY = t.clientY - rawDy;
-          }
-
-          if (this.joystickKnobEl) {
-            this.joystickKnobEl.style.transform = `translate(${rawDx}px,${rawDy}px)`;
-          }
-
-          let dx = rawDx;
-          let dy = rawDy;
-          if (this.screenManager.isCanvasRotated) {
-            dx = rawDy;
-            dy = -rawDx;
+            dx *= MAX / d;
+            dy *= MAX / d;
           }
 
           this.joystick.dx = dx;
           this.joystick.dy = dy;
+
+          if (this.joystickKnobEl) {
+            this.joystickKnobEl.style.transform = `translate(${dx}px,${dy}px)`;
+          }
 
           const nx = dx / MAX, ny = dy / MAX, DZ = 0.18;
           this.input.forward  = ny < -DZ;
@@ -103,15 +87,10 @@ export class MobileUI {
           this.input.right    = nx >  DZ;
         }
 
+        // Xử lý góc xoay Camera
         if (this.cameraTouch && t.identifier === this.cameraTouch.id) {
-          let dYaw   = -(t.clientX - this.cameraTouch.lastX) * 0.006;
-          let dPitch = -(t.clientY - this.cameraTouch.lastY) * 0.006;
-
-          if (this.screenManager.isCanvasRotated) {
-            const temp = dYaw;
-            dYaw = -dPitch;
-            dPitch = temp;
-          }
+          const dYaw   = -(t.clientX - this.cameraTouch.lastX) * 0.006;
+          const dPitch = -(t.clientY - this.cameraTouch.lastY) * 0.006;
 
           this.cb.rotateCamera(dYaw, dPitch);
           this.cameraTouch.lastX = t.clientX;
@@ -153,7 +132,7 @@ export class MobileUI {
     rendererEl.addEventListener("touchstart", this.rendererTouchStart, { passive: true });
   }
 
-  // ── Joystick ─────────────────────────────────────────────────────────
+  // ── Giao diện Joystick ────────────────────────────────────────────────
   private buildJoystick(ui: HTMLElement): HTMLElement {
     const wrap = document.createElement("div");
     Object.assign(wrap.style, {
@@ -168,25 +147,26 @@ export class MobileUI {
     const base = document.createElement("div");
     Object.assign(base.style, {
       position: "absolute", inset: "0", borderRadius: "50%",
-      background: "radial-gradient(circle at 50% 50%, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.08) 80%)",
-      border: "1.5px solid rgba(255,255,255,0.12)",
-      boxShadow: "0 8px 24px rgba(0,0,0,0.4), inset 0 0 12px rgba(0,0,0,0.2)",
-      backdropFilter: "blur(10px)",
+      background: "radial-gradient(circle at 50% 50%, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.06) 80%)",
+      border: "1.5px solid rgba(255,255,255,0.1)",
+      boxShadow: "0 8px 32px rgba(0,0,0,0.5), inset 0 0 16px rgba(0,0,0,0.3)",
+      backdropFilter: "blur(12px)",
+      WebkitBackdropFilter: "blur(12px)",
     });
 
     const ring = document.createElement("div");
     Object.assign(ring.style, {
-      position: "absolute", inset: "8px", borderRadius: "50%",
-      border: "1px dashed rgba(255,255,255,0.12)",
+      position: "absolute", inset: "10px", borderRadius: "50%",
+      border: "1px dashed rgba(255,255,255,0.15)",
     });
 
     const knob = document.createElement("div");
     Object.assign(knob.style, {
-      width: "56px", height: "56px", borderRadius: "50%",
-      background: "radial-gradient(circle at 35% 30%, #ffffff 0%, #aab4cc 90%)",
-      border: "2px solid rgba(255,255,255,0.8)",
-      boxShadow: "0 4px 12px rgba(0,0,0,0.5), inset 0 -2px 4px rgba(0,0,0,0.2)",
-      transition: "transform 0.05s ease-out",
+      width: "52px", height: "52px", borderRadius: "50%",
+      background: "radial-gradient(circle at 35% 30%, #ffffff 0%, #899bb0 90%)",
+      border: "1.5px solid rgba(255,255,255,0.8)",
+      boxShadow: "0 6px 16px rgba(0,0,0,0.6), inset 0 -3px 6px rgba(0,0,0,0.3)",
+      transition: "transform 0.04s ease-out",
     });
 
     wrap.appendChild(base);
@@ -197,22 +177,20 @@ export class MobileUI {
     return wrap;
   }
 
-  // ── Nút hành động (dùng ảnh) ─────────────────────────────────────────
+  // ── Nút chiêu thức (Cắt tâm Sprite Sheet sấm sét) ──────────────────────
   private buildActionButtons(ui: HTMLElement) {
-    const SIZE = 64;
-    const GAP = 12;
-    const RIGHT = 24;
-    const BOTTOM = 100;
+    const SIZE = 68;
+    const GAP = 14;
+    const RIGHT = 32;
+    const BOTTOM = 90;
 
-    // Mặc định ảnh (nếu không truyền)
-    const imgs = this.buttonImages || {};
-
+    // Tỷ lệposY tính toán chuẩn xác để ẩn viền đen/chữ số, lấy trọn lõi năng lượng sấm sét
     const buttons = [
-      { id: "jump",    img: imgs.jump    || "/assets/ui/jump.png",    fn: () => this.cb.jump(),          bottom: BOTTOM + SIZE + GAP, right: RIGHT + SIZE/2 },
-      { id: "punch",   img: imgs.punch   || "/assets/ui/punch.png",   fn: () => this.cb.attack("punch"),   bottom: BOTTOM,              right: RIGHT + SIZE + GAP },
-      { id: "kick",    img: imgs.kick    || "/assets/ui/kick.png",    fn: () => this.cb.attack("kick"),    bottom: BOTTOM,              right: RIGHT },
-      { id: "special", img: imgs.special || "/assets/ui/special.png", fn: () => this.cb.attack("mmaKick"), bottom: BOTTOM + SIZE + GAP, right: RIGHT + SIZE + GAP },
-      { id: "sprint",  img: imgs.sprint  || "/assets/ui/sprint.png",  fn: () => this.toggleSprint(),        bottom: BOTTOM + SIZE*1.5 + GAP*2, right: RIGHT + SIZE/2, toggle: true },
+      { id: "punch",   posY: "1.5%",  fn: () => this.cb.attack("punch"),   bottom: BOTTOM,              right: RIGHT + SIZE + GAP },
+      { id: "kick",    posY: "25.8%", fn: () => this.cb.attack("kick"),    bottom: BOTTOM,              right: RIGHT },
+      { id: "special", posY: "50.0%", fn: () => this.cb.attack("mmaKick"), bottom: BOTTOM + SIZE + GAP, right: RIGHT + SIZE + GAP },
+      { id: "sprint",  posY: "74.3%", fn: () => this.toggleSprint(),        bottom: BOTTOM + SIZE*2 + GAP*2, right: RIGHT + SIZE/2 },
+      { id: "jump",    posY: "98.5%", fn: () => this.cb.jump(),          bottom: BOTTOM + SIZE + GAP, right: RIGHT + SIZE/2 },
     ];
 
     for (const btn of buttons) {
@@ -225,52 +203,57 @@ export class MobileUI {
         width: ${SIZE}px;
         height: ${SIZE}px;
         border-radius: 50%;
-        background-color: rgba(255,255,255,0.05);
-        background-image: url(${btn.img});
-        background-size: 80%;
-        background-position: center;
+        
+        /* Trích xuất 1 ô độc lập từ Sprite Sheet dải dọc */
+        background-image: url(${this.spriteSheetImage});
+        background-size: 100% 510%;
+        background-position: center ${btn.posY};
         background-repeat: no-repeat;
-        border: 1px solid rgba(255,255,255,0.18);
+        
+        background-color: rgba(10, 15, 30, 0.65);
+        border: 2px solid rgba(255, 255, 255, 0.2);
         backdrop-filter: blur(8px);
+        WebkitBackdropFilter: blur(8px);
         pointer-events: all;
         touch-action: none;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.35), inset 0 0 8px rgba(255,255,255,0.05);
-        transition: transform 0.1s ease, box-shadow 0.1s ease;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.4), inset 0 0 10px rgba(255,255,255,0.05);
+        transition: transform 0.1s cubic-bezier(0.25, 1, 0.5, 1), box-shadow 0.1s ease, border-color 0.1s ease;
       `;
 
       el.addEventListener("touchstart", (e) => {
         e.preventDefault();
-        el.style.transform = "scale(0.85)";
-        el.style.boxShadow = "0 2px 6px rgba(0,0,0,0.5)";
+        el.style.transform = "scale(0.88)";
+        el.style.borderColor = "rgba(0, 168, 255, 0.8)";
+        el.style.boxShadow = "0 0 20px rgba(0, 168, 255, 0.6), inset 0 0 12px rgba(255,255,255,0.1)";
         btn.fn();
       }, { passive: false });
 
       el.addEventListener("touchend", () => {
         el.style.transform = "scale(1)";
-        el.style.boxShadow = "0 4px 12px rgba(0,0,0,0.35), inset 0 0 8px rgba(255,255,255,0.05)";
+        el.style.borderColor = "rgba(255, 255, 255, 0.2)";
+        el.style.boxShadow = "0 6px 16px rgba(0,0,0,0.4), inset 0 0 10px rgba(255,255,255,0.05)";
       });
-
-      // Nếu là nút toggle (sprint), lưu lại để đổi ảnh sau
-      if (btn.toggle) {
-        (el as any).__toggleImg = { normal: btn.img, active: imgs.sprintActive || btn.img };
-      }
 
       ui.appendChild(el);
     }
   }
 
+  // ── Xử lý kích hoạt trạng thái Chạy Nhanh (Sprint) ──────────────────────
   private toggleSprint() {
     this.sprintActive = !this.sprintActive;
     this.input.sprint = this.sprintActive;
+    
     const sprintBtn = this.root.querySelector('[data-id="sprint"]') as HTMLElement;
     if (sprintBtn) {
-      const imgs = (sprintBtn as any).__toggleImg;
-      if (imgs) {
-        sprintBtn.style.backgroundImage = `url(${this.sprintActive ? imgs.active : imgs.normal})`;
+      if (this.sprintActive) {
+        sprintBtn.style.backgroundColor = "rgba(0, 168, 255, 0.25)";
+        sprintBtn.style.borderColor = "#00a8ff";
+        sprintBtn.style.boxShadow = "0 0 24px rgba(0, 140, 255, 0.7), inset 0 0 8px rgba(255,255,255,0.2)";
+      } else {
+        sprintBtn.style.backgroundColor = "rgba(10, 15, 30, 0.6)";
+        sprintBtn.style.borderColor = "rgba(255, 255, 255, 0.2)";
+        sprintBtn.style.boxShadow = "0 6px 16px rgba(0,0,0,0.4), inset 0 0 10px rgba(255,255,255,0.05)";
       }
-      sprintBtn.style.background = this.sprintActive
-        ? "radial-gradient(circle at 30% 25%, #ffd84a, #d49a00)"
-        : "rgba(255,255,255,0.05)";
     }
   }
 
@@ -280,4 +263,4 @@ export class MobileUI {
     this.rendererEl.removeEventListener("touchstart", this.rendererTouchStart);
     this.root.parentElement?.removeChild(this.root);
   }
-    }
+}
