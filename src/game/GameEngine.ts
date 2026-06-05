@@ -179,7 +179,7 @@ export class GameEngine {
   private loadIntroScene() {
     // Nếu đang ở hub, dọn dẹp hub trước
     if (this.hubScene) {
-      this.hubScene.getScene().remove(this.player);
+      this.hubScene.scene.remove(this.player);          // ✅ dùng thuộc tính .scene
       this.hubScene.unload().catch(err => console.error("unload hub error:", err));
       this.hubScene = null;
     }
@@ -205,7 +205,6 @@ export class GameEngine {
     this.scene.remove(this.player); // tạm remove khỏi intro scene
 
     const hub = new HubScene();
-    // KHÔNG ghi đè scene — HubScene dùng scene riêng của nó (THREE.Scene mới)
 
     let loaded = false;
     try {
@@ -218,13 +217,13 @@ export class GameEngine {
     if (!loaded) {
       // Rollback hoàn toàn về intro scene
       this.scene.add(this.player);
-      this.sceneMode = "intro"; // đảm bảo mode không bị corrupt
-      this.npcTriggered = false; // cho phép thử lại
+      this.sceneMode = "intro";
+      this.npcTriggered = false;
       return;
     }
 
-    // Add player vào scene của HubScene
-    hub.getScene().add(this.player);
+    // Add player vào scene của HubScene (sử dụng thuộc tính .scene)
+    hub.scene.add(this.player);
 
     this.hubScene = hub;
     this.playerCtrl.setColliders([]);
@@ -312,7 +311,7 @@ export class GameEngine {
 
       // ✅ Render đúng scene theo mode
       const activeScene = this.sceneMode === "hub" && this.hubScene
-        ? this.hubScene.getScene()
+        ? this.hubScene.scene          // dùng thuộc tính .scene của HubScene
         : this.scene;
       this.renderer.render(activeScene, this.camera);
 
@@ -373,7 +372,8 @@ export class GameEngine {
       this.hubScene.update(dt);
 
       if (!locked && !isAttacking) {
-        const target = this.hubScene.checkPortalCollision(this.player.position);
+        // ✅ Sửa đúng tên method
+        const target = this.hubScene.checkPortals(this.player.position);
         if (target) {
           if (target !== this.lastPortalTarget) {
             this.lastPortalTarget = target;
@@ -433,4 +433,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-}
+      }
