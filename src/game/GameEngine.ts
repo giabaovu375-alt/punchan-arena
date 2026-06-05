@@ -207,12 +207,19 @@ export class GameEngine {
     const hub = new HubScene();
     // KHÔNG ghi đè scene — HubScene dùng scene riêng của nó (THREE.Scene mới)
 
+    let loaded = false;
     try {
       await hub.load();
+      loaded = true;
     } catch (err) {
       console.error("❌ Không load được HubScene:", err);
-      // Rollback: add player lại intro scene
+    }
+
+    if (!loaded) {
+      // Rollback hoàn toàn về intro scene
       this.scene.add(this.player);
+      this.sceneMode = "intro"; // đảm bảo mode không bị corrupt
+      this.npcTriggered = false; // cho phép thử lại
       return;
     }
 
@@ -362,7 +369,7 @@ export class GameEngine {
           },
         );
       }
-    } else if (this.sceneMode === "hub" && this.hubScene) {
+    } else if (this.sceneMode === "hub" && this.hubScene && typeof this.hubScene.checkPortals === "function") {
       this.hubScene.update(dt);
 
       if (!locked && !isAttacking) {
@@ -426,5 +433,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-                     }
-      
+        }
