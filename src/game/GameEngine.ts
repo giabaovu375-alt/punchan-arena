@@ -373,7 +373,7 @@ export class GameEngine {
       this.hubScene.update(dt);
 
       if (!locked && !isAttacking) {
-        const target = this.hubScene.checkPortals(this.player.position);
+        const target = this.hubScene.checkPortalCollision(this.player.position);
         if (target) {
           if (target !== this.lastPortalTarget) {
             this.lastPortalTarget = target;
@@ -433,4 +433,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-        }
+}
