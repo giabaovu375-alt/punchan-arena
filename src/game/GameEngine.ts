@@ -16,12 +16,15 @@ import {
   type IntroSceneHandles,
 } from "./IntroScene";
 
-// Hub scene (class)
+// Hub scene
 import { HubScene } from "./scenes/HubScene";
 
 // Event system
 import { eventBus } from "./core/EventBus";
 import { GameEvents } from "./types/events";
+
+// Collision Manager (MỚI)
+import { collisionManager } from "./core/CollisionManager";
 
 export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
 
@@ -29,7 +32,7 @@ type SceneMode = "intro" | "hub";
 
 export class GameEngine {
   private container: HTMLElement;
-  private scene: THREE.Scene;           // scene dùng cho intro (và placeholder)
+  private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
   private timer = new THREE.Timer();
@@ -127,7 +130,6 @@ export class GameEngine {
       this.player.add(this.createPlaceholder());
     }
 
-    // Player bắt đầu trong intro scene
     this.scene.add(this.player);
 
     // ── Dialogue UI ─────────────────────────────────────────────────────────
@@ -167,7 +169,6 @@ export class GameEngine {
   // SCENE LOADING
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /** Xóa tất cả object trong một scene trừ player */
   private clearThreeScene(target: THREE.Scene) {
     const toRemove: THREE.Object3D[] = [];
     target.traverse(o => {
@@ -177,18 +178,20 @@ export class GameEngine {
   }
 
   private loadIntroScene() {
-    // Nếu đang ở hub, dọn dẹp hub trước
     if (this.hubScene) {
-      this.hubScene.scene.remove(this.player);          // ✅ dùng thuộc tính .scene
+      this.hubScene.scene.remove(this.player);
       this.hubScene.unload().catch(err => console.error("unload hub error:", err));
       this.hubScene = null;
     }
 
+    // Xóa sạch collider cũ
+    collisionManager.clear();
+
     this.clearThreeScene(this.scene);
-    this.scene.add(this.player); // đảm bảo player ở intro scene
+    this.scene.add(this.player);
 
     this.introHandles = buildIntroScene(this.scene, this.isMobile);
-    this.playerCtrl.setColliders([]);
+    this.playerCtrl.setColliders([]); // intro không có vật cản
 
     if (this.player?.position && PLAYER_SPAWN) {
       this.player.position.copy(PLAYER_SPAWN);
@@ -200,9 +203,8 @@ export class GameEngine {
   }
 
   private async switchToHub() {
-    // Dọn intro scene
     this.clearThreeScene(this.scene);
-    this.scene.remove(this.player); // tạm remove khỏi intro scene
+    this.scene.remove(this.player);
 
     const hub = new HubScene();
 
@@ -215,18 +217,15 @@ export class GameEngine {
     }
 
     if (!loaded) {
-      // Rollback hoàn toàn về intro scene
       this.scene.add(this.player);
       this.sceneMode = "intro";
       this.npcTriggered = false;
       return;
     }
 
-    // Add player vào scene của HubScene (sử dụng thuộc tính .scene)
     hub.scene.add(this.player);
-
     this.hubScene = hub;
-    this.playerCtrl.setColliders([]);
+    this.playerCtrl.setColliders([]); // collider giờ do CollisionManager lo
     this.player.position.set(0, 0, 30);
 
     this.sceneMode = "hub";
@@ -309,9 +308,8 @@ export class GameEngine {
       const dt = Math.min(this.timer.getDelta(), 0.05);
       this.update(dt);
 
-      // ✅ Render đúng scene theo mode
       const activeScene = this.sceneMode === "hub" && this.hubScene
-        ? this.hubScene.scene          // dùng thuộc tính .scene của HubScene
+        ? this.hubScene.scene
         : this.scene;
       this.renderer.render(activeScene, this.camera);
 
@@ -330,10 +328,22 @@ export class GameEngine {
     // Khoá input khi đang dialogue
     const locked = this.dialogue.isVisible();
 
-    const { moving, sprinting, onGround } =
-      locked
-        ? { moving: false, sprinting: false, onGround: true }
-        : this.playerCtrl.update(dt, this.cameraYaw, this.player);
+    let playerPos = this.player.position.clone();
+    let moving = false, sprinting = false, onGround = true;
+
+    if (!locked) {
+      const result = this.playerCtrl.update(dt, this.cameraYaw, this.player);
+      moving = result.moving;
+      sprinting = result.sprinting;
+      onGround = result.onGround;
+      playerPos = this.player.position.clone();
+    }
+
+    // ── GIẢI QUYẾT VA CHẠM (MỚI) ────────────────────────────────────────
+    const playerRadius = 0.4;
+    const resolvedPos = collisionManager.resolveCollisions(playerPos, playerRadius, "player");
+    this.player.position.copy(resolvedPos);
+    // ──────────────────────────────────────────────────────────────────────
 
     const { isAttacking } = this.animCtrl.update(dt);
     if (!isAttacking) this.animCtrl.drive(moving, sprinting, onGround);
@@ -372,7 +382,6 @@ export class GameEngine {
       this.hubScene.update(dt);
 
       if (!locked && !isAttacking) {
-        // ✅ Sửa đúng tên method
         const target = this.hubScene.checkPortals(this.player.position);
         if (target) {
           if (target !== this.lastPortalTarget) {
