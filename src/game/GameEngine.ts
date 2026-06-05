@@ -29,7 +29,7 @@ type SceneMode = "intro" | "hub";
 
 export class GameEngine {
   private container: HTMLElement;
-  private scene: THREE.Scene;
+  private scene: THREE.Scene;           // scene dùng cho intro (và placeholder)
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
   private timer = new THREE.Timer();
@@ -60,7 +60,7 @@ export class GameEngine {
   // Scene management
   private sceneMode: SceneMode = "intro";
   private introHandles: IntroSceneHandles | null = null;
-  private hubScene: HubScene | null = null;   // ✅ Thay vì hubHandles
+  private hubScene: HubScene | null = null;
   private npcTriggered = false;
   private lastPortalTarget: string | null = null;
 
@@ -94,7 +94,7 @@ export class GameEngine {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.isMobile ? 1.5 : 2));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap; // ✅ sửa deprecated
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -126,6 +126,8 @@ export class GameEngine {
     } else {
       this.player.add(this.createPlaceholder());
     }
+
+    // Player bắt đầu trong intro scene
     this.scene.add(this.player);
 
     // ── Dialogue UI ─────────────────────────────────────────────────────────
@@ -165,48 +167,62 @@ export class GameEngine {
   // SCENE LOADING
   // ═══════════════════════════════════════════════════════════════════════════
 
-  private clearScene() {
+  /** Xóa tất cả object trong một scene trừ player */
+  private clearThreeScene(target: THREE.Scene) {
     const toRemove: THREE.Object3D[] = [];
-    this.scene.traverse(o => {
-      if (o !== this.player && o.parent === this.scene) toRemove.push(o);
+    target.traverse(o => {
+      if (o !== this.player && o.parent === target) toRemove.push(o);
     });
-    toRemove.forEach(o => this.scene.remove(o));
+    toRemove.forEach(o => target.remove(o));
   }
 
   private loadIntroScene() {
-    this.clearScene();
+    // Nếu đang ở hub, dọn dẹp hub trước
+    if (this.hubScene) {
+      this.hubScene.getScene().remove(this.player);
+      this.hubScene.unload().catch(err => console.error("unload hub error:", err));
+      this.hubScene = null;
+    }
+
+    this.clearThreeScene(this.scene);
+    this.scene.add(this.player); // đảm bảo player ở intro scene
+
     this.introHandles = buildIntroScene(this.scene, this.isMobile);
     this.playerCtrl.setColliders([]);
+
     if (this.player?.position && PLAYER_SPAWN) {
       this.player.position.copy(PLAYER_SPAWN);
     }
+
     this.sceneMode = "intro";
     this.npcTriggered = false;
-    this.hubScene = null;            // ✅ xóa instance hub cũ
     this.lastPortalTarget = null;
   }
 
   private async switchToHub() {
-    this.clearScene();
-  
-    // ✅ Tạo instance HubScene và gán scene chung
+    // Dọn intro scene
+    this.clearThreeScene(this.scene);
+    this.scene.remove(this.player); // tạm remove khỏi intro scene
+
     const hub = new HubScene();
-    // Quan trọng: HubScene dùng this.scene để thêm object, ta phải trỏ đúng scene của GameEngine
-    (hub as any).scene = this.scene;   // nếu HubScene không có setter public, ta tạm dùng any
-    
+    // KHÔNG ghi đè scene — HubScene dùng scene riêng của nó (THREE.Scene mới)
+
     try {
-      await hub.load();                // load models, dựng scene
+      await hub.load();
     } catch (err) {
       console.error("❌ Không load được HubScene:", err);
+      // Rollback: add player lại intro scene
+      this.scene.add(this.player);
       return;
     }
-  
+
+    // Add player vào scene của HubScene
+    hub.getScene().add(this.player);
+
     this.hubScene = hub;
     this.playerCtrl.setColliders([]);
-  
-    // Spawn player ở giữa hub (tọa độ như HUB_SPAWN cũ)
-    this.player.position.copy(new THREE.Vector3(0, 0, 30));
-  
+    this.player.position.set(0, 0, 30);
+
     this.sceneMode = "hub";
     this.introHandles = null;
     this.lastPortalTarget = null;
@@ -257,7 +273,7 @@ export class GameEngine {
     this.lastMouse = { x: e.clientX, y: e.clientY };
     if (e.button === 0) this.animCtrl.triggerAttack("punch");
   };
-  private onMouseUp = () => { this.isRotating = false; };
+  private onMouseUp   = () => { this.isRotating = false; };
   private onMouseMove = (e: MouseEvent) => {
     if (!this.isRotating) return;
     this.targetYaw   -= (e.clientX - this.lastMouse.x) * 0.005;
@@ -286,7 +302,13 @@ export class GameEngine {
       this.timer.update();
       const dt = Math.min(this.timer.getDelta(), 0.05);
       this.update(dt);
-      this.renderer.render(this.scene, this.camera);
+
+      // ✅ Render đúng scene theo mode
+      const activeScene = this.sceneMode === "hub" && this.hubScene
+        ? this.hubScene.getScene()
+        : this.scene;
+      this.renderer.render(activeScene, this.camera);
+
       this.rafId = requestAnimationFrame(tick);
     };
     this.rafId = requestAnimationFrame(tick);
@@ -320,7 +342,7 @@ export class GameEngine {
       this.bodyParts.head.position.y = 1.75 + bob;
     }
 
-    // ── Scene‑specific logic ─────────────────────────────────────────────
+    // ── Scene-specific logic ──────────────────────────────────────────────
     if (this.sceneMode === "intro" && this.introHandles) {
       tickIntroScene(this.introHandles, dt);
 
@@ -334,7 +356,6 @@ export class GameEngine {
           INTRO_NPC_DIALOGUE.npcName,
           INTRO_NPC_DIALOGUE.lines,
           () => {
-            // ✅ switchToHub là async, dùng async wrapper
             fadeToWhite(this.container, () => {
               this.switchToHub().catch(err => console.error(err));
             });
@@ -342,8 +363,7 @@ export class GameEngine {
         );
       }
     } else if (this.sceneMode === "hub" && this.hubScene) {
-      // ✅ Gọi update của HubScene (class)
-      this.hubScene.update(dt);   // thực chất gọi onUpdate bên trong
+      this.hubScene.update(dt);
 
       if (!locked && !isAttacking) {
         const target = this.hubScene.checkPortals(this.player.position);
@@ -364,7 +384,7 @@ export class GameEngine {
 
     this.dialogue.update(dt);
 
-    // Camera follow (dùng .copy() an toàn)
+    // Camera follow
     const camOff = this._camOff.set(
       Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch),
       -Math.sin(this.cameraPitch),
@@ -385,7 +405,7 @@ export class GameEngine {
   // ═══════════════════════════════════════════════════════════════════════════
   // PUBLIC API
   // ═══════════════════════════════════════════════════════════════════════════
-  getScene()  { return this.scene;  }
+  getScene()  { return this.scene; }
   getPlayer() { return this.player; }
   getMixer()  { return this.animCtrl.getMixer(); }
 
@@ -406,4 +426,5 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-  }
+                     }
+      
