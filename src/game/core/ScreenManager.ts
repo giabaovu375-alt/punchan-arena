@@ -1,139 +1,96 @@
-import * as THREE from "three";
-
 /**
- * ScreenManager – Tự động xoay canvas để game luôn hiển thị ngang
- * - Khi điện thoại dọc → canvas tự xoay 90° (landscape)
- * - Giữ nguyên UI (joystick, nút bấm) không bị xoay
- * - Chặn zoom trình duyệt (pinch, double-tap)
- * - Cung cấp cờ isCanvasRotated để đồng bộ với MobileUI
+ * ScreenManager – Cố định game ở chế độ LANDSCAPE
+ * - Hiển thị overlay nếu điện thoại đang cầm dọc
+ * - Yêu cầu & khóa màn hình ngang khi người chơi tương tác
+ * - Chặn zoom (pinch, double‑tap)
  */
 export class ScreenManager {
   private overlay: HTMLElement | null = null;
   private disposeOrientation: () => void;
   private cleanZoomPreventer: () => void;
 
-  private renderer: THREE.WebGLRenderer | null = null;
-  private camera: THREE.PerspectiveCamera | null = null;
-  private canvasWrapper: HTMLElement | null = null;
-
-  /** true nếu canvas đang bị xoay cưỡng ép (portrait → landscape) */
-  public isCanvasRotated = false;
-
   constructor() {
     this.injectViewportMeta();
     this.overlay = this.createOrientationOverlay();
     this.disposeOrientation = this.listenOrientation();
     this.cleanZoomPreventer = this.preventSafariZoom();
+
+    // Khi người chơi chạm lần đầu → vào fullscreen & khóa ngang
+    document.addEventListener('touchstart', this.requestLandscape, { once: true });
   }
 
-  /**
-   * Gắn renderer, camera và container để quản lý xoay.
-   * Gọi sau khi tạo renderer và camera.
-   */
-  setupForcedLandscape(
-    renderer: THREE.WebGLRenderer,
-    camera: THREE.PerspectiveCamera,
-    canvasContainer: HTMLElement
-  ) {
-    this.renderer = renderer;
-    this.camera = camera;
-
-    // Tạo wrapper để xoay canvas
-    const wrapper = document.createElement("div");
-    Object.assign(wrapper.style, {
-      position: "absolute",
-      top: "50%",
-      left: "50%",
-      transformOrigin: "center center",
-      overflow: "hidden",
-    });
-    canvasContainer.insertBefore(wrapper, renderer.domElement);
-    wrapper.appendChild(renderer.domElement);
-    this.canvasWrapper = wrapper;
-
-    this.applyOrientation();
-  }
-
-  /** Tính toán lại kích thước renderer và camera, xoay canvas nếu cần */
-  private applyOrientation() {
-    if (!this.renderer || !this.camera || !this.canvasWrapper) return;
-
-    const isPortrait = window.innerHeight > window.innerWidth;
-    this.isCanvasRotated = isPortrait;
-
-    const screenW = window.innerWidth;
-    const screenH = window.innerHeight;
-
-    if (isPortrait) {
-      // Xoay canvas để hiển thị landscape
-      this.canvasWrapper.style.width = `${screenH}px`;
-      this.canvasWrapper.style.height = `${screenW}px`;
-      this.canvasWrapper.style.transform = "translate(-50%, -50%) rotate(90deg)";
-      this.renderer.setSize(screenH, screenW);
-      this.camera.aspect = screenH / screenW;
-    } else {
-      // Màn hình ngang tự nhiên
-      this.canvasWrapper.style.width = `${screenW}px`;
-      this.canvasWrapper.style.height = `${screenH}px`;
-      this.canvasWrapper.style.transform = "translate(-50%, -50%) rotate(0deg)";
-      this.renderer.setSize(screenW, screenH);
-      this.camera.aspect = screenW / screenH;
+  /** Yêu cầu fullscreen + khóa landscape (nếu trình duyệt hỗ trợ) */
+  private requestLandscape = () => {
+    // Toàn màn hình để có thể lock orientation
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(() => {});
     }
-
-    this.camera.updateProjectionMatrix();
-  }
-
-  // ── Các hàm nội bộ ────────────────────────────────────────────────
+    // Khóa hướng màn hình
+    if (screen.orientation && (screen.orientation as any).lock) {
+      (screen.orientation as any).lock('landscape').catch(() => {});
+    }
+  };
 
   private injectViewportMeta() {
     let meta = document.querySelector('meta[name="viewport"]');
     if (!meta) {
-      meta = document.createElement("meta");
-      meta.setAttribute("name", "viewport");
+      meta = document.createElement('meta');
+      meta.setAttribute('name', 'viewport');
       document.head.appendChild(meta);
     }
     meta.setAttribute(
-      "content",
-      "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+      'content',
+      'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover'
     );
   }
 
   private createOrientationOverlay() {
-    if (document.getElementById("__orientation-overlay")) return null;
-    const div = document.createElement("div");
-    div.id = "__orientation-overlay";
+    if (document.getElementById('__orientation-overlay')) return null;
+    const div = document.createElement('div');
+    div.id = '__orientation-overlay';
     div.innerHTML = `
-      <div style="font-size:44px; margin-bottom:12px;">🔄</div>
-      <div style="font-size:16px; font-weight:bold;">ĐANG XOAY KHÔNG GIAN GAME...</div>
+      <div style="font-size:56px; margin-bottom:16px;">📱</div>
+      <div style="font-size:20px; font-weight:800;">XOAY NGANG ĐIỆN THOẠI</div>
+      <div style="font-size:13px; opacity:0.6;">Trải nghiệm tốt hơn ở chế độ ngang</div>
     `;
     Object.assign(div.style, {
-      display: "none",
-      position: "fixed",
-      inset: "0",
-      zIndex: "99999",
-      background: "#0a0a14",
-      color: "#fff",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      fontFamily: "sans-serif",
+      display: 'none',
+      position: 'fixed',
+      inset: '0',
+      zIndex: '99999',
+      background: 'rgba(10,10,20,0.95)',
+      color: '#fff',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontFamily: 'sans-serif',
+      textAlign: 'center',
     });
     document.body.appendChild(div);
     return div;
   }
 
   private listenOrientation() {
-    const handler = () => this.applyOrientation();
-    window.addEventListener("resize", handler);
-    // Trả về cleanup function
-    return () => window.removeEventListener("resize", handler);
+    const mediaQuery = window.matchMedia('(orientation: portrait)');
+    const handler = (e: MediaQueryListEvent | MediaQueryList) => {
+      this.updateOverlay(e.matches);
+    };
+    handler(mediaQuery); // kiểm tra ngay lúc đầu
+    mediaQuery.addEventListener('change', handler);
+    return () => mediaQuery.removeEventListener('change', handler);
   }
 
+  private updateOverlay(isPortrait: boolean) {
+    if (!this.overlay) return;
+    this.overlay.style.display = isPortrait ? 'flex' : 'none';
+  }
+
+  /** Chặn pinch‑zoom và double‑tap zoom trên iOS */
   private preventSafariZoom() {
     const touchHandler = (e: TouchEvent) => {
       if (e.touches.length > 1) e.preventDefault();
     };
-    document.documentElement.addEventListener("touchstart", touchHandler, { passive: false });
+    document.documentElement.addEventListener('touchstart', touchHandler, { passive: false });
 
     let lastTouchTime = 0;
     const doubleTapHandler = (e: TouchEvent) => {
@@ -141,18 +98,17 @@ export class ScreenManager {
       if (now - lastTouchTime <= 300) e.preventDefault();
       lastTouchTime = now;
     };
-    document.documentElement.addEventListener("touchend", doubleTapHandler, { passive: false });
+    document.documentElement.addEventListener('touchend', doubleTapHandler, { passive: false });
 
     return () => {
-      document.documentElement.removeEventListener("touchstart", touchHandler);
-      document.documentElement.removeEventListener("touchend", doubleTapHandler);
+      document.documentElement.removeEventListener('touchstart', touchHandler);
+      document.documentElement.removeEventListener('touchend', doubleTapHandler);
     };
   }
 
   dispose() {
-    this.disposeOrientation();        // Gỡ listener resize
-    this.cleanZoomPreventer();        // Gỡ chặn zoom
+    this.disposeOrientation();
+    this.cleanZoomPreventer();
     this.overlay?.remove();
-    this.canvasWrapper?.remove();
   }
 }
