@@ -27,6 +27,9 @@ import { GameEvents } from "./types/events";
 import { ScreenManager } from "./core/ScreenManager";
 import { collisionManager } from "./core/CollisionManager";
 
+// Asset Manager (preload toàn bộ model)
+import { AssetManager } from "./core/AssetManager";
+
 export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
 
 type SceneMode = "intro" | "hub";
@@ -68,12 +71,16 @@ export class GameEngine {
   private lastPortalTarget: string | null = null;
 
   private screenManager!: ScreenManager;
+  public assetManager!: AssetManager;
 
   private _camOff    = new THREE.Vector3();
   private _tgt       = new THREE.Vector3();
   private _camTarget = new THREE.Vector3();
 
-  constructor(
+  /**
+   * Chuyển constructor về dạng private để ép việc khởi tạo phải đi qua hàm tĩnh `create()`
+   */
+  private constructor(
     container: HTMLElement,
     character: CharacterDef,
     model: THREE.Group | null,
@@ -105,7 +112,7 @@ export class GameEngine {
     container.style.position = "relative";
     container.appendChild(this.renderer.domElement);
 
-    // ── Screen Manager (Hệ thống khóa xoay cứng Native Landscape) ──────────
+    // ── Screen Manager ──────────────────────────────────────────────────────
     this.screenManager = new ScreenManager();
 
     // ── Player rig ──────────────────────────────────────────────────────────
@@ -144,7 +151,6 @@ export class GameEngine {
 
     this.hud = new HUD(container, character, this.isMobile);
 
-    // Kích hoạt giao diện di động nếu phát hiện thiết bị cảm ứng
     if (this.isMobile) {
       this.mobileUI = new MobileUI(
         container,
@@ -154,28 +160,62 @@ export class GameEngine {
           jump: () => this.playerCtrl.requestJump(),
           attack: (key) => this.animCtrl.triggerAttack(key),
           rotateCamera: (dYaw, dPitch) => {
-            // Vuốt xoay camera mượt mà theo hệ tọa độ tự nhiên
             this.targetYaw   += dYaw;
             this.targetPitch += dPitch;
             this.targetPitch = Math.max(-1.2, Math.min(0.3, this.targetPitch));
           },
         },
-        // Khởi tạo duy nhất đường dẫn Sprite sheet sấm sét hệ Lôi
         "/assets/ui/1000185469.png"
       );
     }
 
-    // ── Khởi động với IntroScene ───────────────────────────────────────────
-    this.loadIntroScene();
+    this.assetManager = new AssetManager();
+  }
 
-    // ── Vòng lặp Game loop ──────────────────────────────────────────────────
+  /**
+   * Hàm khởi tạo Engine tĩnh bất đồng bộ, giải quyết triệt để lỗi bất đồng bộ vòng đời
+   */
+  public static async create(
+    container: HTMLElement,
+    character: CharacterDef,
+    model: THREE.Group | null,
+    clips: AnimClipMap,
+  ): Promise<GameEngine> {
+    const engine = new GameEngine(container, character, model, clips);
+    await engine.initGame();
+    return engine;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRELOAD & INIT
+  // ═══════════════════════════════════════════════════════════════════════════
+  private async initGame() {
+    const loadingEl = document.createElement("div");
+    loadingEl.textContent = "Đang tải dữ liệu... 0%";
+    loadingEl.style.cssText = `
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      color: #fff; font-size: 24px; z-index: 100;
+      font-family: sans-serif; pointer-events: none;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    `;
+    this.container.appendChild(loadingEl);
+
+    // Chờ cho đến khi toàn bộ cây cối, tảng đá nằm yên vị trong RAM
+    await this.assetManager.preloadAll((loaded, total) => {
+      loadingEl.textContent = `Đang tải... ${Math.round((loaded / total) * 100)}%`;
+    });
+
+    loadingEl.remove();
+
+    // Tài nguyên sẵn sàng -> dựng map và kích hoạt render loop
+    this.loadIntroScene();
     this.start();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // SCENE LOADING
   // ═══════════════════════════════════════════════════════════════════════════
-
   private clearThreeScene(target: THREE.Scene) {
     const toRemove: THREE.Object3D[] = [];
     target.traverse(o => {
@@ -192,10 +232,10 @@ export class GameEngine {
     }
 
     collisionManager.clear();
-
     this.clearThreeScene(this.scene);
     this.scene.add(this.player);
 
+    // Truyền trực tiếp instance assetManager vào để IntroScene có thể rút model cây ra dùng
     this.introHandles = buildIntroScene(this.scene, this.isMobile);
     this.playerCtrl.setColliders([]);
 
@@ -240,7 +280,7 @@ export class GameEngine {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // PLACEHOLDER (khi không có model gLTF)
+  // PLACEHOLDER (khi không có model)
   // ═══════════════════════════════════════════════════════════════════════════
   private createPlaceholder(): THREE.Object3D {
     const group = new THREE.Group();
@@ -281,15 +321,12 @@ export class GameEngine {
 
   private onMouseDown = (e: MouseEvent) => {
     if (this.isMobile) return;
-
     this.isRotating = true;
     this.lastMouse = { x: e.clientX, y: e.clientY };
     if (e.button === 0) this.animCtrl.triggerAttack("punch");
   };
 
-  private onMouseUp = () => {
-    this.isRotating = false;
-  };
+  private onMouseUp = () => { this.isRotating = false; };
 
   private onMouseMove = (e: MouseEvent) => {
     if (!this.isRotating || this.isMobile) return;
@@ -352,7 +389,7 @@ export class GameEngine {
       playerPos = this.player.position.clone();
     }
 
-    // ── Xử lý va chạm thế giới ──────────────────────────────────────────
+    // ── Va chạm ──────────────────────────────────────────────────────────
     const playerRadius = 0.4;
     const resolvedPos = collisionManager.resolveCollisions(playerPos, playerRadius, "player");
     this.player.position.copy(resolvedPos);
@@ -369,7 +406,7 @@ export class GameEngine {
       this.bodyParts.head.position.y = 1.75 + bob;
     }
 
-    // ── Logic phân mảnh theo từng Scene ──────────────────────────────────
+    // ── Scene‑specific logic ──────────────────────────────────────────────
     if (this.sceneMode === "intro" && this.introHandles) {
       tickIntroScene(this.introHandles, dt);
 
@@ -407,7 +444,6 @@ export class GameEngine {
 
     this.dialogue.update(dt);
 
-    // ── Nội suy vị trí Camera bám theo nhân vật ───────────────────────────
     const camOff = this._camOff.set(
       Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch),
       -Math.sin(this.cameraPitch),
@@ -444,10 +480,11 @@ export class GameEngine {
     this.hud.dispose();
     this.dialogue.dispose();
     this.screenManager.dispose();
+    this.assetManager.clear();
     this.renderer.dispose();
 
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-          }
-               
+  }
+  
