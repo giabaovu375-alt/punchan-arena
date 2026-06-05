@@ -9,36 +9,36 @@ import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader";
 type Stage = "preload" | "select" | "loading" | "playing";
 
 const ANIM_MAP: Record<AnimKey, string> = {
-  idle:            "/animation/Idle.fbx",
-  walk:            "/animation/Walking.fbx",
-  run:             "/animation/Running.fbx",
-  jump:            "/animation/Jumping.fbx",
-  punch:           "/animation/Hook Punch.fbx",
-  kick:            "/animation/Kicking.fbx",
-  uppercut:        "/animation/Uppercut Jab.fbx",
-  dropKick:        "/animation/Drop Kick.fbx",
-  mmaKick:         "/animation/Mma Kick.fbx",
-  elbow:           "/animation/Elbow Uppercut Combo.fbx",
-  sideKick:        "/animation/Side Kick.fbx",
-  pain:            "/animation/Pain Gesture.fbx",
-  death:           "/animation/Crouch Death.fbx",
-  gettingUp:       "/animation/Getting Up.fbx",
-  breakdanceEnd:   "/animation/Breakdance Ending 3.fbx",
-  breakdanceFreeze:"/animation/Breakdance Freezes.fbx",
-  sitting:         "/animation/Sitting.fbx",
-  sittingIdle:     "/animation/Sitting Idle.fbx",
+  idle:             "/animation/Idle.fbx",
+  walk:             "/animation/Walking.fbx",
+  run:              "/animation/Running.fbx",
+  jump:             "/animation/Jumping.fbx",
+  punch:            "/animation/Hook Punch.fbx",
+  kick:             "/animation/Kicking.fbx",
+  uppercut:         "/animation/Uppercut Jab.fbx",
+  dropKick:         "/animation/Drop Kick.fbx",
+  mmaKick:          "/animation/Mma Kick.fbx",
+  elbow:            "/animation/Elbow Uppercut Combo.fbx",
+  sideKick:         "/animation/Side Kick.fbx",
+  pain:             "/animation/Pain Gesture.fbx",
+  death:            "/animation/Crouch Death.fbx",
+  gettingUp:        "/animation/Getting Up.fbx",
+  breakdanceEnd:    "/animation/Breakdance Ending 3.fbx",
+  breakdanceFreeze: "/animation/Breakdance Freezes.fbx",
+  sitting:          "/animation/Sitting.fbx",
+  sittingIdle:      "/animation/Sitting Idle.fbx",
 };
 
 const modelCache = new Map<string, THREE.Group>();
 const clipCache  = new Map<string, THREE.AnimationClip>();
 
 async function preloadAllAssets(onProgress: (pct: number, label: string) => void) {
-  const gltfLoader = new GLTFLoader();
-  const fbxLoader  = new FBXLoader();
+  const gltfLoader  = new GLTFLoader();
+  const fbxLoader   = new FBXLoader();
   const animEntries = Object.entries(ANIM_MAP) as [AnimKey, string][];
   const total = CHARACTERS.length + animEntries.length;
   let done = 0;
-  const tick = (label: string) => { done++; onProgress(Math.round(done/total*100), label); };
+  const tick = (label: string) => { done++; onProgress(Math.round(done / total * 100), label); };
 
   await Promise.all(CHARACTERS.map((c) =>
     new Promise<void>((res) => {
@@ -75,7 +75,7 @@ function cloneModel(source: THREE.Group): THREE.Group {
   const sourceBones: THREE.Bone[] = [];
   const cloneBones:  THREE.Bone[] = [];
   source.traverse((n) => { if ((n as THREE.Bone).isBone) sourceBones.push(n as THREE.Bone); });
-  clone.traverse((n)  => { if ((n as THREE.Bone).isBone) cloneBones.push(n as THREE.Bone);  });
+  clone.traverse((n)  => { if ((n as THREE.Bone).isBone) cloneBones.push(n as THREE.Bone); });
   clone.traverse((n) => {
     if (!(n as THREE.SkinnedMesh).isSkinnedMesh) return;
     const mesh    = n as THREE.SkinnedMesh;
@@ -89,6 +89,7 @@ function cloneModel(source: THREE.Group): THREE.Group {
   return clone;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
 export function GameCanvas() {
   const [stage, setStage]               = useState<Stage>("preload");
   const [selectedId, setSelectedId]     = useState<CharacterId | null>(null);
@@ -103,43 +104,24 @@ export function GameCanvas() {
     }).then(() => setStage("select"));
   }, []);
 
-  // ── ĐỒNG BỘ HÓA ĐOẠN RAFT GAME ENGINE SỬ DỤNG ASYNC/AWAIT ────────────────
   useEffect(() => {
     if (stage !== "playing" || !ref.current || !selectedId) return;
-
     let isCancelled = false;
     let engine: GameEngine | null = null;
-
     const initEngine = async () => {
       const char        = CHARACTERS.find((c) => c.id === selectedId)!;
       const cachedModel = modelCache.get(char.modelUrl);
-      const model = cachedModel ? cloneModel(cachedModel) : null;
-
+      const model       = cachedModel ? cloneModel(cachedModel) : null;
       const clips: AnimClipMap = {};
       for (const key of Object.keys(ANIM_MAP) as AnimKey[]) {
         const clip = clipCache.get(key);
         if (clip) clips[key] = clip;
       }
-
-      // Gọi thông qua hàm tĩnh bất đồng bộ đã sửa ở GameEngine.ts
       const instance = await GameEngine.create(ref.current!, char, model, clips);
-      
-      if (isCancelled) {
-        // Nếu component bị unmount trong lúc đang await nạp map, dọn dẹp ngay lập tức
-        instance.dispose();
-      } else {
-        engine = instance;
-      }
+      if (isCancelled) { instance.dispose(); } else { engine = instance; }
     };
-
-    initEngine().catch(err => console.error("Lỗi vòng đời khởi tạo Engine:", err));
-
-    return () => {
-      isCancelled = true;
-      if (engine) {
-        engine.dispose();
-      }
-    };
+    initEngine().catch((err) => console.error("Lỗi khởi tạo Engine:", err));
+    return () => { isCancelled = true; engine?.dispose(); };
   }, [stage, selectedId]);
 
   const handleSelect = (c: CharacterDef) => {
@@ -164,53 +146,68 @@ export function GameCanvas() {
   );
 }
 
-// ── MÀN HÌNH PRELOAD SỬ DỤNG ẢNH KEY ART ĐỘC QUYỀN ──────────────────────────
+// ── PRELOAD ───────────────────────────────────────────────────────────────────
 function PreloadScreen({ pct, label }: { pct: number; label: string }) {
   return (
     <div style={{
-      position:"fixed", inset:0,
-      display:"flex", flexDirection:"column",
-      alignItems:"center", justifyContent:"center",
-      fontFamily:"'Segoe UI', sans-serif",
-      color:"white",
+      position: "fixed", inset: 0,
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      fontFamily: "'Segoe UI', sans-serif",
+      color: "white",
     }}>
-      {/* Cập nhật trỏ thẳng vào bức ảnh PunChan - Arena sịn mịn của ní */}
       <img
         src="/assets/ui/loading-bg.png"
-        alt="PunChan - Arena KeyArt"
-        style={{
-          position:"absolute", inset:0,
-          width:"100%", height:"100%",
-          objectFit:"cover",
-          zIndex:0,
-        }}
+        alt="Loading"
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", zIndex: 0 }}
       />
-
       <div style={{
-        position:"absolute", inset:0,
-        background:"linear-gradient(to bottom, rgba(0,0,0,0.2), rgba(0,0,0,0.6))",
-        zIndex:1,
-      }}/>
+        position: "absolute", inset: 0, zIndex: 1,
+        background: "linear-gradient(to bottom, rgba(0,0,0,0.2), rgba(0,0,0,0.65))",
+      }} />
 
-      <div style={{ position:"relative", zIndex:2, textAlign:"center", marginBottom:56 }}>
-        <div style={{ fontSize:11, letterSpacing:"0.4em", color:"rgba(255,255,255,0.7)", textTransform:"uppercase", marginBottom:12 }}>Hệ thống đang nạp cấu trúc</div>
-        <div style={{ fontSize:"clamp(32px,6vw,56px)", fontWeight:900, letterSpacing:"0.08em", color:"#fff", textShadow:"0 4px 20px rgba(0,0,0,0.8)", textTransform:"uppercase" }}>PUNCHAN - ARENA</div>
-        <div style={{ marginTop:8, fontSize:12, color:"rgba(255,255,255,0.6)", letterSpacing:"0.2em", textTransform:"uppercase" }}>3D Action RPG Framework</div>
+      {/* Title */}
+      <div style={{ position: "relative", zIndex: 2, textAlign: "center", marginBottom: 52 }}>
+        <div style={{ fontSize: 10, letterSpacing: "0.45em", color: "rgba(255,255,255,0.55)", textTransform: "uppercase", marginBottom: 14 }}>
+          Hệ thống đang nạp cấu trúc
+        </div>
+        <div style={{
+          fontSize: "clamp(30px,5.5vw,52px)", fontWeight: 900,
+          letterSpacing: "0.08em", color: "#fff",
+          textShadow: "0 4px 24px rgba(0,0,0,0.9)", textTransform: "uppercase",
+        }}>
+          PUNCHAN — ARENA
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: "rgba(255,255,255,0.45)", letterSpacing: "0.22em", textTransform: "uppercase" }}>
+          3D Action RPG
+        </div>
       </div>
 
-      <div style={{ position:"relative", zIndex:2, width:"min(400px,80vw)" }}>
-        <div style={{ height:4, background:"rgba(255,255,255,0.15)", borderRadius:99, overflow:"hidden", marginBottom:16 }}>
-          <div style={{ height:"100%", width:`${pct}%`, background:"linear-gradient(90deg,#00f5d4,#00a8ff)", borderRadius:99, transition:"width 0.2s ease" }}/>
+      {/* Progress */}
+      <div style={{ position: "relative", zIndex: 2, width: "min(380px,78vw)" }}>
+        <div style={{ height: 3, background: "rgba(255,255,255,0.12)", borderRadius: 99, overflow: "hidden", marginBottom: 14 }}>
+          <div style={{
+            height: "100%", width: `${pct}%`,
+            background: "linear-gradient(90deg,#00f5d4,#00a8ff)",
+            borderRadius: 99, transition: "width 0.2s ease",
+          }} />
         </div>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <div style={{ fontSize:11, color:"rgba(255,255,255,0.7)", letterSpacing:"0.06em", maxWidth:"70%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textShadow:"0 1px 2px #000" }}>{label}</div>
-          <div style={{ fontSize:13, fontWeight:700, color:"#00f5d4", fontVariantNumeric:"tabular-nums", textShadow:"0 1px 2px #000" }}>{pct}%</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{
+            fontSize: 10, color: "rgba(255,255,255,0.55)", letterSpacing: "0.06em",
+            maxWidth: "72%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>{label}</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#00f5d4", fontVariantNumeric: "tabular-nums" }}>{pct}%</div>
         </div>
       </div>
 
-      <div style={{ position:"relative", zIndex:2, marginTop:48, display:"flex", gap:6 }}>
-        {[0,1,2].map(i=>(
-          <div key={i} style={{ width:5, height:5, borderRadius:"50%", background:"#00f5d4", opacity:0.4, animation:`dotpulse 1.2s ease-in-out ${i*0.2}s infinite` }}/>
+      {/* Dots */}
+      <div style={{ position: "relative", zIndex: 2, marginTop: 44, display: "flex", gap: 6 }}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} style={{
+            width: 5, height: 5, borderRadius: "50%", background: "#00f5d4",
+            animation: `dotpulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+          }} />
         ))}
       </div>
       <style>{`@keyframes dotpulse{0%,100%{opacity:.2;transform:scale(1)}50%{opacity:1;transform:scale(1.5)}}`}</style>
@@ -218,17 +215,21 @@ function PreloadScreen({ pct, label }: { pct: number; label: string }) {
   );
 }
 
+// ── LOADING CHARACTER ─────────────────────────────────────────────────────────
 function LoadingScreen({ accent, name, title }: { accent: string; name: string; title: string }) {
   return (
     <div className="relative flex h-screen w-screen items-center justify-center overflow-hidden bg-black">
-      <div className="absolute inset-0 opacity-40" style={{ background:`radial-gradient(circle at 50% 50%,${accent}55,transparent 60%)` }}/>
-      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/10"/>
+      <div className="absolute inset-0 opacity-40"
+        style={{ background: `radial-gradient(circle at 50% 50%,${accent}55,transparent 60%)` }} />
+      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/10" />
       <div className="relative z-10 text-center">
         <div className="text-xs uppercase tracking-[0.5em] text-white/40">Đang triệu hồi</div>
-        <div className="mt-4 font-serif text-6xl font-bold tracking-tight text-white" style={{ textShadow:`0 0 30px ${accent}` }}>{name}</div>
-        <div className="mt-2 text-sm uppercase tracking-[0.4em]" style={{ color:accent }}>{title}</div>
+        <div className="mt-4 font-serif text-6xl font-bold tracking-tight text-white"
+          style={{ textShadow: `0 0 30px ${accent}` }}>{name}</div>
+        <div className="mt-2 text-sm uppercase tracking-[0.4em]" style={{ color: accent }}>{title}</div>
         <div className="mx-auto mt-10 h-px w-64 overflow-hidden bg-white/10">
-          <div className="h-full animate-[loadbar_1.2s_ease-in-out_forwards]" style={{ background:accent, width:"0%" }}/>
+          <div className="h-full animate-[loadbar_1.2s_ease-in-out_forwards]"
+            style={{ background: accent, width: "0%" }} />
         </div>
       </div>
       <style>{`@keyframes loadbar{from{width:0%}to{width:100%}}`}</style>
@@ -236,42 +237,92 @@ function LoadingScreen({ accent, name, title }: { accent: string; name: string; 
   );
 }
 
+// ── HUD – gọn, sạch, không rác ───────────────────────────────────────────────
 function Hud({ character, onExit }: { character: CharacterDef; onExit: () => void }) {
   return (
     <>
-      <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-3">
-        <div className="flex h-14 w-14 items-center justify-center rounded-full border-2 text-xl font-bold text-white shadow-lg"
-          style={{ borderColor:character.accent, backgroundColor:`${character.accent}33` }}>
+      {/* ── Góc trên-trái: Avatar + tên + thanh HP/Stamina ── */}
+      <div className="pointer-events-none absolute left-3 top-3"
+        style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+
+        {/* Avatar tròn */}
+        <div style={{
+          width: 48, height: 48, flexShrink: 0,
+          borderRadius: "50%",
+          border: `2px solid ${character.accent}`,
+          background: `${character.accent}22`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 20, fontWeight: 800, color: "#fff",
+          boxShadow: `0 0 18px ${character.accent}55`,
+          backdropFilter: "blur(8px)",
+        }}>
           {character.name[0]}
         </div>
-        <div>
-          <div className="text-xs uppercase tracking-[0.3em] text-white/60">{character.title}</div>
-          <div className="font-serif text-lg font-semibold text-white">{character.name}</div>
-          <div className="mt-1 h-1.5 w-44 overflow-hidden rounded-full bg-white/10">
-            <div className="h-full rounded-full" style={{ width:"100%", background:character.accent }}/>
+
+        {/* Info panel */}
+        <div style={{
+          background: "rgba(0,0,0,0.52)",
+          border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: 10,
+          backdropFilter: "blur(14px)",
+          padding: "8px 14px 10px",
+          minWidth: 170,
+        }}>
+          {/* Name + class */}
+          <div style={{ display: "flex", alignItems: "baseline", gap: 7, marginBottom: 7 }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: "#fff", letterSpacing: "0.02em" }}>
+              {character.name}
+            </span>
+            <span style={{ fontSize: 9, color: character.accent, letterSpacing: "0.18em", textTransform: "uppercase", fontWeight: 600 }}>
+              LV.1 · {character.title}
+            </span>
+          </div>
+
+          {/* HP bar */}
+          <div style={{ marginBottom: 5 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.45)", letterSpacing: "0.12em" }}>HP</span>
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.55)", fontVariantNumeric: "tabular-nums" }}>100 / 100</span>
+            </div>
+            <div style={{ height: 5, background: "rgba(255,255,255,0.1)", borderRadius: 99, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: "100%", borderRadius: 99, background: "linear-gradient(90deg,#f87171,#fb923c)" }} />
+            </div>
+          </div>
+
+          {/* Stamina bar */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.45)", letterSpacing: "0.12em" }}>STAMINA</span>
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.55)", fontVariantNumeric: "tabular-nums" }}>100</span>
+            </div>
+            <div style={{ height: 5, background: "rgba(255,255,255,0.1)", borderRadius: 99, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: "100%", borderRadius: 99, background: "linear-gradient(90deg,#34d399,#06b6d4)" }} />
+            </div>
           </div>
         </div>
       </div>
-      <button onClick={onExit} className="absolute right-4 top-4 rounded-md border border-white/20 bg-black/40 px-3 py-1.5 text-xs uppercase tracking-[0.3em] text-white/80 backdrop-blur transition hover:bg-white/10">
+
+      {/* ── Góc trên-phải: nút đổi nhân vật gọn ── */}
+      <button
+        onClick={onExit}
+        style={{
+          position: "absolute", top: 12, right: 12,
+          padding: "7px 16px",
+          fontSize: 10, letterSpacing: "0.2em", textTransform: "uppercase",
+          color: "rgba(255,255,255,0.75)",
+          background: "rgba(0,0,0,0.45)",
+          border: "1px solid rgba(255,255,255,0.18)",
+          borderRadius: 8,
+          backdropFilter: "blur(12px)",
+          cursor: "pointer",
+          transition: "background 0.15s",
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.1)")}
+        onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(0,0,0,0.45)")}
+      >
         Đổi nhân vật
       </button>
-      <div className="pointer-events-none absolute bottom-4 left-4 rounded-lg border border-white/10 bg-black/50 px-4 py-3 text-xs text-white/80 backdrop-blur">
-        <div className="mb-1 text-[10px] uppercase tracking-[0.3em] text-white/40">Điều khiển</div>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-1">
-          <span><kbd className="kbd">WASD</kbd> Di chuyển</span>
-          <span><kbd className="kbd">Shift</kbd> Chạy</span>
-          <span><kbd className="kbd">Space</kbd> Nhảy</span>
-          <span><kbd className="kbd">Z/X/C/V</kbd> Đánh</span>
-          <span><kbd className="kbd">Chuột</kbd> Xoay cam</span>
-        </div>
-      </div>
-      <div className="absolute bottom-4 right-4 h-32 w-32 rounded-lg border border-white/15 bg-black/40 backdrop-blur">
-        <div className="absolute inset-2 rounded-md border border-white/10"/>
-        <div className="absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full"
-          style={{ background:character.accent, boxShadow:`0 0 12px ${character.accent}` }}/>
-        <div className="absolute bottom-1 right-2 text-[9px] uppercase tracking-widest text-white/40">Minimap</div>
-      </div>
-      <style>{`.kbd{display:inline-block;min-width:1.3em;padding:0 .35em;margin-right:.25em;border-radius:.25rem;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);font-family:ui-monospace,monospace;font-size:.7rem}`}</style>
     </>
   );
-              }
+      }
+            
