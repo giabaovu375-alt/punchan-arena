@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from "three";
 
 export function setupGround(scene: THREE.Scene): void {
   const ground = new THREE.Mesh(
@@ -9,7 +9,6 @@ export function setupGround(scene: THREE.Scene): void {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // Đường đi dọc & ngang
   const pathMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 1 });
   const pathV = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 100), pathMat);
   pathV.rotation.x = -Math.PI / 2;
@@ -22,4 +21,4 @@ export function setupGround(scene: THREE.Scene): void {
   pathH.position.set(0, 0.01, 0);
   pathH.receiveShadow = true;
   scene.add(pathH);
-}
+    }
