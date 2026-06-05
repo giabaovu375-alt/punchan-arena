@@ -16,7 +16,7 @@ import { GameEvents } from '../types/events';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MODEL_BASE = '/model%20cây/glTF';
+const MODEL_BASE = '/model-tree';
 export const HUB_SPAWN = new THREE.Vector3(0, 0, 30);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
