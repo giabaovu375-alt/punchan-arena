@@ -27,9 +27,6 @@ import { GameEvents } from "./types/events";
 import { ScreenManager } from "./core/ScreenManager";
 import { collisionManager } from "./core/CollisionManager";
 
-// Asset Manager (preload toàn bộ model)
-import { AssetManager } from "./core/AssetManager";
-
 export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
 
 type SceneMode = "intro" | "hub";
@@ -71,13 +68,13 @@ export class GameEngine {
   private lastPortalTarget: string | null = null;
 
   private screenManager!: ScreenManager;
-  public assetManager!: AssetManager;
 
   private _camOff    = new THREE.Vector3();
   private _tgt       = new THREE.Vector3();
   private _camTarget = new THREE.Vector3();
 
-  constructor(
+  // ── Constructor private – Bắt buộc gọi thông qua static create ──────────
+  private constructor(
     container: HTMLElement,
     character: CharacterDef,
     model: THREE.Group | null,
@@ -162,76 +159,24 @@ export class GameEngine {
             this.targetPitch = Math.max(-1.2, Math.min(0.3, this.targetPitch));
           },
         },
-        "/assets/ui/1000185469.png"
+        "/assets/ui/1000185469.png"  // Cắt sprite sheet chuẩn xác không lo lỗi load ảnh
       );
     }
 
-    // ── Preload asset rồi mới bắt đầu game ────────────────────────────────
-    this.assetManager = new AssetManager();
-    this.initGame();   // async, không block constructor
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PRELOAD & INIT (CÓ ẢNH LOADING)
-  // ═══════════════════════════════════════════════════════════════════════════
-  private async initGame() {
-    // Tạo màn hình loading
-    const loadingEl = document.createElement("div");
-    loadingEl.style.cssText = `
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      background: #0a0a14;
-      z-index: 100; pointer-events: none;
-    `;
-
-    // Ảnh loading (logo hoặc ảnh tùy chỉnh)
-    const img = document.createElement("img");
-    img.src = "/assets/ui/loading-bg.png";   // ← cậu thay bằng đường dẫn ảnh load của mình
-    img.style.cssText = `
-      width: 200px; height: auto; margin-bottom: 24px;
-      image-rendering: crisp-edges;
-    `;
-    loadingEl.appendChild(img);
-
-    // Thanh tiến trình
-    const progressContainer = document.createElement("div");
-    progressContainer.style.cssText = `
-      width: 200px; height: 6px; background: rgba(255,255,255,0.12);
-      border-radius: 999px; overflow: hidden;
-    `;
-
-    const progressBar = document.createElement("div");
-    progressBar.style.cssText = `
-      height: 100%; width: 0%; background: #00a8ff;
-      border-radius: 999px; transition: width 0.15s ease;
-      box-shadow: 0 0 12px #00a8ff;
-    `;
-    progressContainer.appendChild(progressBar);
-    loadingEl.appendChild(progressContainer);
-
-    // Text tiến trình
-    const progressText = document.createElement("div");
-    progressText.style.cssText = `
-      margin-top: 8px; color: rgba(255,255,255,0.7); font-size: 14px;
-      font-family: sans-serif;
-    `;
-    loadingEl.appendChild(progressText);
-
-    this.container.appendChild(loadingEl);
-
-    // Preload toàn bộ asset
-    await this.assetManager.preloadAll((loaded, total) => {
-      const pct = Math.round((loaded / total) * 100);
-      progressBar.style.width = `${pct}%`;
-      progressText.textContent = `Đang tải... ${pct}%`;
-    });
-
-    // Xoá loading
-    loadingEl.remove();
-
-    // Bắt đầu game
+    // Khởi động intro scene và bắt đầu game loop
     this.loadIntroScene();
     this.start();
+  }
+
+  // ── Khởi tạo bất đồng bộ chính thức phục vụ vòng đời React Component ──
+  public static async create(
+    container: HTMLElement,
+    character: CharacterDef,
+    model: THREE.Group | null,
+    clips: AnimClipMap,
+  ): Promise<GameEngine> {
+    // Đảm bảo trả về Instance hoàn chỉnh dạng Promise để cơ chế 'await' bên React không bị treo
+    return new GameEngine(container, character, model, clips);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -500,10 +445,9 @@ export class GameEngine {
     this.hud.dispose();
     this.dialogue.dispose();
     this.screenManager.dispose();
-    this.assetManager.clear();
     this.renderer.dispose();
 
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-  }
+      }
