@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from "three";
 
 export interface LeafParticleSystem {
   points: THREE.Points;
@@ -24,18 +24,13 @@ export function createLeafParticles(scene: THREE.Scene): LeafParticleSystem {
   }
 
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   const mat = new THREE.PointsMaterial({
-    color: 0xffaa33,
-    size: 0.15,
-    transparent: true,
-    opacity: 0.7,
-    sizeAttenuation: true,
-    depthWrite: false,
+    color: 0xffaa33, size: 0.15, transparent: true, opacity: 0.7,
+    sizeAttenuation: true, depthWrite: false,
   });
   const points = new THREE.Points(geo, mat);
   scene.add(points);
-
   return { points, velocities, positions, count };
 }
 
@@ -53,4 +48,4 @@ export function tickLeafParticles(sys: LeafParticleSystem, dt: number): void {
     }
   }
   (sys.points.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-      }
+}
