@@ -8,25 +8,12 @@ import { MobileUI } from "./MobileUI";
 import { DialogueUI, fadeToWhite } from "./DialogueUI";
 import { INTRO_NPC_DIALOGUE } from "./dialogues";
 
-// Intro scene
-import {
-  buildIntroScene,
-  tickIntroScene,
-  PLAYER_SPAWN,
-  type IntroSceneHandles,
-} from "./IntroScene";
-
-// Hub scene
+import { buildIntroScene, tickIntroScene, PLAYER_SPAWN, type IntroSceneHandles } from "./IntroScene";
 import { HubScene } from "./scenes/HubScene";
-
-// Event system
 import { eventBus } from "./core/EventBus";
 import { GameEvents } from "./types/events";
-
-// Collision Manager (MỚI)
+import { ScreenManager } from "./core/ScreenManager";
 import { collisionManager } from "./core/CollisionManager";
-
-export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
 
 type SceneMode = "intro" | "hub";
 
@@ -60,14 +47,14 @@ export class GameEngine {
   private mobileUI: MobileUI | null = null;
   private dialogue!: DialogueUI;
 
-  // Scene management
   private sceneMode: SceneMode = "intro";
   private introHandles: IntroSceneHandles | null = null;
   private hubScene: HubScene | null = null;
   private npcTriggered = false;
   private lastPortalTarget: string | null = null;
 
-  // Scratch vectors
+  private screenManager!: ScreenManager;
+
   private _camOff    = new THREE.Vector3();
   private _tgt       = new THREE.Vector3();
   private _camTarget = new THREE.Vector3();
@@ -80,9 +67,9 @@ export class GameEngine {
   ) {
     this.container = container;
     this.character = character;
+    // Kiểm tra chính xác thiết bị cảm ứng đầu cuối tránh nhận diện nhầm chuột
     this.isMobile = ("ontouchstart" in window) || navigator.maxTouchPoints > 0;
 
-    // ── Scene / camera / renderer ───────────────────────────────────────────
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x9bc4e2);
     this.scene.fog = new THREE.Fog(0x9bc4e2, 40, 180);
@@ -104,11 +91,12 @@ export class GameEngine {
     container.style.position = "relative";
     container.appendChild(this.renderer.domElement);
 
-    // ── Player rig ──────────────────────────────────────────────────────────
+    this.screenManager = new ScreenManager();
+    this.screenManager.setupForcedLandscape(this.renderer, this.camera, this.container);
+
     this.player = new THREE.Group();
     this.player.name = "PlayerRig";
 
-    // ── Sub-controllers ─────────────────────────────────────────────────────
     this.playerCtrl = new PlayerController({
       character,
       worldRadius: 140,
@@ -120,7 +108,6 @@ export class GameEngine {
       onComboChanged: (count) => this.hud.flashCombo(count),
     });
 
-    // ── Model ────────────────────────────────────────────────────────────────
     if (model) {
       const { modelRoot, playerHeight, footOffset } = this.animCtrl.setupModel(this.player, model, clips);
       this.modelRoot = modelRoot;
@@ -129,19 +116,26 @@ export class GameEngine {
     } else {
       this.player.add(this.createPlaceholder());
     }
-
     this.scene.add(this.player);
 
-    // ── Dialogue UI ─────────────────────────────────────────────────────────
     this.dialogue = new DialogueUI(container);
 
-    // ── Bind events + UI ────────────────────────────────────────────────────
     this.playerCtrl.bindKeyboard();
     this.bindMouseAndResize();
 
     this.hud = new HUD(container, character, this.isMobile);
 
     if (this.isMobile) {
+      // 🔥 TÍCH HỢP ĐƯỜNG DẪN BỘ ẢNH CHIÊU THỨC SẤM SÉT MỚI VÀO ENGINE
+      const thunderSkillAssets = {
+        punch: "/assets/ui/punch.png",
+        kick: "/assets/ui/kick.png",
+        special: "/assets/ui/special.png",
+        sprint: "/assets/ui/sprint.png",
+        sprintActive: "/assets/ui/sprint_active.png",
+        jump: "/assets/ui/jump.png"
+      };
+
       this.mobileUI = new MobileUI(
         container,
         this.renderer.domElement,
@@ -155,114 +149,17 @@ export class GameEngine {
             this.targetPitch = Math.max(-1.2, Math.min(0.3, this.targetPitch));
           },
         },
+        this.screenManager,
+        thunderSkillAssets // 👈 Truyền bộ ảnh chiêu thức mới vào đây
       );
     }
 
-    // ── Start with IntroScene ───────────────────────────────────────────────
     this.loadIntroScene();
-
-    // ── Start game loop ─────────────────────────────────────────────────────
     this.start();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // SCENE LOADING
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  private clearThreeScene(target: THREE.Scene) {
-    const toRemove: THREE.Object3D[] = [];
-    target.traverse(o => {
-      if (o !== this.player && o.parent === target) toRemove.push(o);
-    });
-    toRemove.forEach(o => target.remove(o));
-  }
-
-  private loadIntroScene() {
-    if (this.hubScene) {
-      this.hubScene.scene.remove(this.player);
-      this.hubScene.unload().catch(err => console.error("unload hub error:", err));
-      this.hubScene = null;
-    }
-
-    // Xóa sạch collider cũ
-    collisionManager.clear();
-
-    this.clearThreeScene(this.scene);
-    this.scene.add(this.player);
-
-    this.introHandles = buildIntroScene(this.scene, this.isMobile);
-    this.playerCtrl.setColliders([]); // intro không có vật cản
-
-    if (this.player?.position && PLAYER_SPAWN) {
-      this.player.position.copy(PLAYER_SPAWN);
-    }
-
-    this.sceneMode = "intro";
-    this.npcTriggered = false;
-    this.lastPortalTarget = null;
-  }
-
-  private async switchToHub() {
-    this.clearThreeScene(this.scene);
-    this.scene.remove(this.player);
-
-    const hub = new HubScene();
-
-    let loaded = false;
-    try {
-      await hub.load();
-      loaded = true;
-    } catch (err) {
-      console.error("❌ Không load được HubScene:", err);
-    }
-
-    if (!loaded) {
-      this.scene.add(this.player);
-      this.sceneMode = "intro";
-      this.npcTriggered = false;
-      return;
-    }
-
-    hub.scene.add(this.player);
-    this.hubScene = hub;
-    this.playerCtrl.setColliders([]); // collider giờ do CollisionManager lo
-    this.player.position.set(0, 0, 30);
-
-    this.sceneMode = "hub";
-    this.introHandles = null;
-    this.lastPortalTarget = null;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PLACEHOLDER (khi không có model)
-  // ═══════════════════════════════════════════════════════════════════════════
-  private createPlaceholder(): THREE.Object3D {
-    const group = new THREE.Group();
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: this.character.color, roughness: 0.6, metalness: 0.15,
-    });
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 0.8, 4, 12), bodyMat);
-    body.position.y = 0.9; body.castShadow = true;
-    group.add(body);
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.32, 16, 16),
-      new THREE.MeshStandardMaterial({ color: 0xe6c7a8, roughness: 0.8 }),
-    );
-    head.position.y = 1.75; head.castShadow = true;
-    group.add(head);
-    const nose = new THREE.Mesh(
-      new THREE.ConeGeometry(0.08, 0.2, 6),
-      new THREE.MeshStandardMaterial({ color: 0xffffff }),
-    );
-    nose.rotation.x = Math.PI / 2;
-    nose.position.set(0, 1.75, 0.32);
-    group.add(nose);
-    this.bodyParts = { body, head };
-    return group;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // MOUSE / RESIZE
+  // MOUSE / RESIZE (SỬA LỖI XUNG ĐỘT MOBILE UX)
   // ═══════════════════════════════════════════════════════════════════════════
   private bindMouseAndResize() {
     this.renderer.domElement.addEventListener("mousedown", this.onMouseDown);
@@ -270,36 +167,50 @@ export class GameEngine {
     window.addEventListener("mousemove", this.onMouseMove);
     this.renderer.domElement.addEventListener("wheel", this.onWheel, { passive: false });
     this.renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
+    
+    // Đăng ký lại sự kiện resize đồng bộ tỷ lệ với ScreenManager
     window.addEventListener("resize", this.onResize);
   }
 
   private onMouseDown = (e: MouseEvent) => {
+    // SỬA LỖI 1: Nếu là thiết bị di động, chặn không cho nút chuột ảo mousedown kích hoạt đòn đánh bừa bãi
+    if (this.isMobile) return;
+
     this.isRotating = true;
     this.lastMouse = { x: e.clientX, y: e.clientY };
     if (e.button === 0) this.animCtrl.triggerAttack("punch");
   };
-  private onMouseUp   = () => { this.isRotating = false; };
+
+  private onMouseUp = () => { 
+    this.isRotating = false; 
+  };
+
   private onMouseMove = (e: MouseEvent) => {
-    if (!this.isRotating) return;
+    if (!this.isRotating || this.isMobile) return;
     this.targetYaw   -= (e.clientX - this.lastMouse.x) * 0.005;
     this.targetPitch -= (e.clientY - this.lastMouse.y) * 0.005;
     this.targetPitch  = Math.max(-1.2, Math.min(0.3, this.targetPitch));
     this.lastMouse = { x: e.clientX, y: e.clientY };
   };
+
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
     this.targetDistance = Math.max(2.5, Math.min(18, this.targetDistance + e.deltaY * 0.01));
   };
+
+  // SỬA LỖI 2: Hàm đồng bộ lại Aspect Ratio cho Camera sau khi ScreenManager thực hiện xoay
   private onResize = () => {
-    const w = this.container.clientWidth, h = this.container.clientHeight;
+    const isPortrait = window.innerHeight > window.innerWidth;
+    const w = isPortrait ? window.innerHeight : window.innerWidth;
+    const h = isPortrait ? window.innerWidth : window.innerHeight;
+
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
   };
 
   // ═══════════════════════════════════════════════════════════════════════════
   // GAME LOOP
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ───────────────────────────────────────────────────────────────────────────
   private start() {
     this.timer.update();
     const tick = () => {
@@ -319,13 +230,11 @@ export class GameEngine {
   }
 
   private update(dt: number) {
-    // Camera smoothing
     const lk = 1 - Math.exp(-12 * dt);
     this.cameraYaw       = lerpAngle(this.cameraYaw, this.targetYaw, lk);
     this.cameraPitch    += (this.targetPitch - this.cameraPitch) * lk;
     this.cameraDistance += (this.targetDistance - this.cameraDistance) * lk;
 
-    // Khoá input khi đang dialogue
     const locked = this.dialogue.isVisible();
 
     let playerPos = this.player.position.clone();
@@ -334,21 +243,22 @@ export class GameEngine {
     if (!locked) {
       const result = this.playerCtrl.update(dt, this.cameraYaw, this.player);
       moving = result.moving;
-      sprinting = result.sprinting;
+      sprinting = result.sprinting; // Giá trị đã đồng bộ mượt mà giữa bàn phím và nút UI di động
       onGround = result.onGround;
       playerPos = this.player.position.clone();
     }
 
-    // ── GIẢI QUYẾT VA CHẠM (MỚI) ────────────────────────────────────────
     const playerRadius = 0.4;
     const resolvedPos = collisionManager.resolveCollisions(playerPos, playerRadius, "player");
     this.player.position.copy(resolvedPos);
-    // ──────────────────────────────────────────────────────────────────────
 
     const { isAttacking } = this.animCtrl.update(dt);
-    if (!isAttacking) this.animCtrl.drive(moving, sprinting, onGround);
+    
+    // SỬA LỖI 3: Điều khiển luồng Animation chuẩn xác tuyệt đối theo dữ liệu đầu vào
+    if (!isAttacking) {
+      this.animCtrl.drive(moving, sprinting, onGround);
+    }
 
-    // Placeholder bob
     this.animTime += dt;
     if (this.bodyParts) {
       const bob = moving && onGround
@@ -358,15 +268,10 @@ export class GameEngine {
       this.bodyParts.head.position.y = 1.75 + bob;
     }
 
-    // ── Scene-specific logic ──────────────────────────────────────────────
     if (this.sceneMode === "intro" && this.introHandles) {
       tickIntroScene(this.introHandles, dt);
 
-      if (
-        !this.npcTriggered &&
-        !locked &&
-        this.introHandles.checkNPCProximity(this.player.position)
-      ) {
+      if (!this.npcTriggered && !locked && this.introHandles.checkNPCProximity(this.player.position)) {
         this.npcTriggered = true;
         this.dialogue.show(
           INTRO_NPC_DIALOGUE.npcName,
@@ -400,7 +305,6 @@ export class GameEngine {
 
     this.dialogue.update(dt);
 
-    // Camera follow
     const camOff = this._camOff.set(
       Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch),
       -Math.sin(this.cameraPitch),
@@ -412,15 +316,90 @@ export class GameEngine {
     this.camera.position.lerp(this._camTarget, lk * 1.8);
     this.camera.lookAt(tgt);
 
-    // HUD
     this.hud.setStamina(this.playerCtrl.stamina);
     this.hud.setHP(this.playerCtrl.hp);
     this.hud.setCompassYaw(this.cameraYaw);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PUBLIC API
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ── Các hàm dọn dẹp bộ nhớ giữ nguyên ─────────────────────────────────────
+  private clearThreeScene(target: THREE.Scene) {
+    const toRemove: THREE.Object3D[] = [];
+    target.traverse(o => {
+      if (o !== this.player && o.parent === target) toRemove.push(o);
+    });
+    toRemove.forEach(o => target.remove(o));
+  }
+
+  private loadIntroScene() {
+    if (this.hubScene) {
+      this.hubScene.scene.remove(this.player);
+      this.hubScene.unload().catch(err => console.error("unload hub error:", err));
+      this.hubScene = null;
+    }
+    collisionManager.clear();
+    this.clearThreeScene(this.scene);
+    this.scene.add(this.player);
+    this.introHandles = buildIntroScene(this.scene, this.isMobile);
+    this.playerCtrl.setColliders([]);
+    if (this.player?.position && PLAYER_SPAWN) {
+      this.player.position.copy(PLAYER_SPAWN);
+    }
+    this.sceneMode = "intro";
+    this.npcTriggered = false;
+    this.lastPortalTarget = null;
+  }
+
+  private async switchToHub() {
+    this.clearThreeScene(this.scene);
+    this.scene.remove(this.player);
+    const hub = new HubScene();
+    let loaded = false;
+    try {
+      await hub.load();
+      loaded = true;
+    } catch (err) {
+      console.error("❌ Không load được HubScene:", err);
+    }
+    if (!loaded) {
+      this.scene.add(this.player);
+      this.sceneMode = "intro";
+      this.npcTriggered = false;
+      return;
+    }
+    hub.scene.add(this.player);
+    this.hubScene = hub;
+    this.playerCtrl.setColliders([]);
+    this.player.position.set(0, 0, 30);
+    this.sceneMode = "hub";
+    this.introHandles = null;
+    this.lastPortalTarget = null;
+  }
+
+  private createPlaceholder(): THREE.Object3D {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: this.character.color, roughness: 0.6, metalness: 0.15,
+    });
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 0.8, 4, 12), bodyMat);
+    body.position.y = 0.9; body.castShadow = true;
+    group.add(body);
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.32, 16, 16),
+      new THREE.MeshStandardMaterial({ color: 0xe6c7a8, roughness: 0.8 }),
+    );
+    head.position.y = 1.75; head.castShadow = true;
+    group.add(head);
+    const nose = new THREE.Mesh(
+      new THREE.ConeGeometry(0.08, 0.2, 6),
+      new THREE.MeshStandardMaterial({ color: 0xffffff }),
+    );
+    nose.rotation.x = Math.PI / 2;
+    nose.position.set(0, 1.75, 0.32);
+    group.add(nose);
+    this.bodyParts = { body, head };
+    return group;
+  }
+
   getScene()  { return this.scene; }
   getPlayer() { return this.player; }
   getMixer()  { return this.animCtrl.getMixer(); }
@@ -428,18 +407,17 @@ export class GameEngine {
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
-
     this.playerCtrl.unbindKeyboard();
     window.removeEventListener("mouseup",   this.onMouseUp);
     window.removeEventListener("mousemove", this.onMouseMove);
     window.removeEventListener("resize",    this.onResize);
-
     this.mobileUI?.dispose();
     this.hud.dispose();
     this.dialogue.dispose();
+    this.screenManager.dispose();
     this.renderer.dispose();
-
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
       }
+      
