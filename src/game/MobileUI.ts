@@ -1,489 +1,346 @@
-import type { InputState, AnimKey } from "./types";
+import { useEffect, useRef, useState } from "react";
+import { GameEngine, type AnimKey, type AnimClipMap } from "@/game/GameEngine";
+import { CharacterSelect } from "@/components/CharacterSelect";
+import { CHARACTERS, type CharacterDef, type CharacterId } from "@/game/characters";
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
+import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader";
 
-export interface MobileUICallbacks {
-  jump: () => void;
-  attack: (key: AnimKey) => void;
-  rotateCamera: (deltaYaw: number, deltaPitch: number) => void;
-}
+type Stage = "preload" | "select" | "loading" | "playing";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LAYOUT: Hình thoi chuẩn PS/Xbox
-//
-//          [SPECIAL]
-//       [PUNCH]   [KICK]
-//          [JUMP]
-//  [SPRINT]
-//
-// Toàn bộ cụm dính góc dưới-phải. Sprint tách riêng ra trái.
-// col / row là bội số của STEP (BTN_SIZE + GAP).
-// col tăng → dịch trái. row tăng → dịch lên.
-// ─────────────────────────────────────────────────────────────────────────────
-const BTN_SIZE   = 82;   // +18px → ngón cái chạm dễ hơn hẳn
-const GAP        = 8;    // kéo sát lại cho cụm gọn
-const SAFE_RIGHT = 16;
-const SAFE_BOT   = 36;
-const STEP       = BTN_SIZE + GAP;
-
-//  Hình thoi chuẩn – nhìn như PS/Xbox
-//          [SPECIAL]
-//      [KICK]  [PUNCH]
-//          [JUMP]
-//  [SPRINT]
-const RHOMBUS = {
-  jump:    { col: 1,   row: 0   },
-  punch:   { col: 1,   row: 1   },
-  kick:    { col: 0,   row: 0.5 },
-  special: { col: 2,   row: 0.5 },
-  sprint:  { col: 3.4, row: 0.1 },   // tách sang trái, hơi nhích lên tránh cạnh dưới
+const ANIM_MAP: Record<AnimKey, string> = {
+  idle:             "/animation/Idle.fbx",
+  walk:             "/animation/Walking.fbx",
+  run:              "/animation/Running.fbx",
+  jump:             "/animation/Jumping.fbx",
+  punch:            "/animation/Hook Punch.fbx",
+  kick:             "/animation/Kicking.fbx",
+  uppercut:         "/animation/Uppercut Jab.fbx",
+  dropKick:         "/animation/Drop Kick.fbx",
+  mmaKick:          "/animation/Mma Kick.fbx",
+  elbow:            "/animation/Elbow Uppercut Combo.fbx",
+  sideKick:         "/animation/Side Kick.fbx",
+  pain:             "/animation/Pain Gesture.fbx",
+  death:            "/animation/Crouch Death.fbx",
+  gettingUp:        "/animation/Getting Up.fbx",
+  breakdanceEnd:    "/animation/Breakdance Ending 3.fbx",
+  breakdanceFreeze: "/animation/Breakdance Freezes.fbx",
+  sitting:          "/animation/Sitting.fbx",
+  sittingIdle:      "/animation/Sitting Idle.fbx",
 };
 
-const BUTTON_DEFS = [
-  { id: "jump",    img: "jump.png",    glow: "#facc15", size: BTN_SIZE * 1.14 }, // nút chính to nhất
-  { id: "punch",   img: "punch.png",   glow: "#38bdf8", size: BTN_SIZE },
-  { id: "kick",    img: "kick.png",    glow: "#f472b6", size: BTN_SIZE },
-  { id: "special", img: "special.png", glow: "#c084fc", size: BTN_SIZE },
-  { id: "sprint",  img: "sprint.png",  glow: "#2dd4bf", size: BTN_SIZE * 0.82 }, // sprint nhỏ hơn chút, phụ trợ
-] as const;
+const modelCache = new Map<string, THREE.Group>();
+const clipCache  = new Map<string, THREE.AnimationClip>();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CSS – nhúng 1 lần
-// ─────────────────────────────────────────────────────────────────────────────
-const INJECTED_CSS = `
-@keyframes mui-ripple {
-  0%   { transform: scale(0.6); opacity: 0.7; }
-  100% { transform: scale(2.4); opacity: 0; }
-}
-@keyframes mui-idle-glow {
-  0%, 100% { opacity: 0.55; }
-  50%       { opacity: 0.85; }
-}
-@keyframes mui-sprint-pulse {
-  0%, 100% { filter: brightness(1.4) saturate(1.8) drop-shadow(0 0 8px #2dd4bf); }
-  50%       { filter: brightness(2.0) saturate(2.4) drop-shadow(0 0 18px #2dd4bf); }
-}
+async function preloadAllAssets(onProgress: (pct: number, label: string) => void) {
+  const gltfLoader  = new GLTFLoader();
+  const fbxLoader   = new FBXLoader();
+  const animEntries = Object.entries(ANIM_MAP) as [AnimKey, string][];
+  const total = CHARACTERS.length + animEntries.length;
+  let done = 0;
+  const tick = (label: string) => { done++; onProgress(Math.round(done / total * 100), label); };
 
-/* ── Nút tròn ── */
-.mui-btn {
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: all;
-  touch-action: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  user-select: none;
-  -webkit-user-select: none;
-  /* Glass base */
-  background:
-    radial-gradient(circle at 38% 32%,
-      rgba(255,255,255,0.22) 0%,
-      rgba(255,255,255,0.07) 45%,
-      rgba(0,0,0,0.42) 100%
-    );
-  backdrop-filter: blur(14px) saturate(1.7);
-  -webkit-backdrop-filter: blur(14px) saturate(1.7);
-  border: 1.5px solid rgba(255,255,255,0.24);
-  box-shadow:
-    0 6px 24px rgba(0,0,0,0.6),
-    0 1px 0 rgba(255,255,255,0.14) inset,
-    0 -1px 0 rgba(0,0,0,0.35) inset;
-  transition:
-    transform  0.07s cubic-bezier(0.34,1.56,0.64,1),
-    box-shadow 0.07s ease;
-  will-change: transform;
+  await Promise.all(CHARACTERS.map((c) =>
+    new Promise<void>((res) => {
+      if (modelCache.has(c.modelUrl)) { tick(c.name); res(); return; }
+      gltfLoader.load(c.modelUrl,
+        (gltf) => { modelCache.set(c.modelUrl, gltf.scene as THREE.Group); tick(c.name); res(); },
+        undefined,
+        () => { tick(c.name + " (lỗi)"); res(); },
+      );
+    })
+  ));
+
+  await Promise.all(animEntries.map(([key, path]) =>
+    new Promise<void>((res) => {
+      if (clipCache.has(key)) { tick(key); res(); return; }
+      fbxLoader.load(path,
+        (fbx) => {
+          if (fbx.animations[0]) {
+            const clip = fbx.animations[0];
+            clip.name = key;
+            clipCache.set(key, clip);
+          }
+          tick(key); res();
+        },
+        undefined,
+        () => { tick(key + " (lỗi)"); res(); },
+      );
+    })
+  ));
 }
 
-/* Specular highlight vòng cung trên đầu nút */
-.mui-btn::before {
-  content: '';
-  position: absolute;
-  top: 6%; left: 15%;
-  width: 70%; height: 38%;
-  border-radius: 50%;
-  background: radial-gradient(ellipse at 50% 20%,
-    rgba(255,255,255,0.32) 0%,
-    transparent 75%
-  );
-  pointer-events: none;
-  z-index: 3;
-}
-
-/* ── Icon: crop đúng giữa ảnh bất kể tỉ lệ gốc ── */
-.mui-btn-img {
-  /* Lấp đầy 78% đường kính nút – đủ thấy icon, không bị tràn cạnh */
-  width:  78%;
-  height: 78%;
-  object-fit: cover;          /* crop, không méo */
-  object-position: center;    /* luôn lấy vùng giữa ảnh */
-  border-radius: 50%;         /* clip tròn cho chắc */
-  pointer-events: none;
-  position: relative;
-  z-index: 1;
-  /* Hơi tăng độ tương phản cho icon nổi trên nền tối */
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.7)) brightness(1.08);
-}
-
-/* Pressed */
-.mui-btn.pressed {
-  transform: scale(0.83) !important;
-}
-
-/* Ripple */
-.mui-ripple-el {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  pointer-events: none;
-  animation: mui-ripple 0.5s ease-out forwards;
-  z-index: 2;
-}
-
-/* Sprint bật */
-.mui-btn.sprint-on {
-  animation: mui-sprint-pulse 0.9s ease-in-out infinite !important;
-}
-
-/* Label */
-.mui-btn-label {
-  position: absolute;
-  bottom: -17px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 8.5px;
-  font-family: 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.45);
-  white-space: nowrap;
-  pointer-events: none;
-  text-shadow: 0 1px 5px rgba(0,0,0,1);
-}
-
-/* ── Joystick ── */
-.mui-joy-wrap {
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: all;
-  touch-action: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.mui-joy-base {
-  position: absolute; inset: 0;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 50% 50%,
-      rgba(255,255,255,0.05) 0%,
-      rgba(0,0,0,0.58) 78%
-    );
-  border: 2px solid rgba(255,255,255,0.16);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow:
-    0 8px 40px rgba(0,0,0,0.75),
-    0 1px 0 rgba(255,255,255,0.1) inset;
-}
-/* Vòng chỉ hướng bên trong */
-.mui-joy-base::before {
-  content: '';
-  position: absolute;
-  inset: 10px;
-  border-radius: 50%;
-  border: 1px solid rgba(255,255,255,0.07);
-}
-.mui-joy-base::after {
-  content: '';
-  position: absolute;
-  inset: 22px;
-  border-radius: 50%;
-  border: 1px solid rgba(255,255,255,0.04);
-}
-.mui-joy-knob {
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 34% 28%,
-      rgba(255,255,255,0.96) 0%,
-      rgba(210,220,232,0.88) 42%,
-      rgba(148,163,184,0.82) 100%
-    );
-  border: 1.5px solid rgba(255,255,255,0.88);
-  box-shadow:
-    0 5px 18px rgba(0,0,0,0.65),
-    0 2px 5px  rgba(0,0,0,0.45),
-    0 1px 0    rgba(255,255,255,1) inset;
-  position: relative;
-  z-index: 2;
-  will-change: transform;
-}
-/* Specular knob */
-.mui-joy-knob::after {
-  content: '';
-  position: absolute;
-  top: 16%; left: 18%;
-  width: 38%; height: 26%;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.68);
-  filter: blur(3px);
-  pointer-events: none;
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-export class MobileUI {
-  private root: HTMLElement;
-  private joystickKnobEl: HTMLElement | null = null;
-  private joystick = { active: false, startX: 0, startY: 0, dx: 0, dy: 0, touchId: -1 };
-  private cameraTouch: { id: number; lastX: number; lastY: number } | null = null;
-  private sprintActive = false;
-
-  private touchMoveHandler: (e: TouchEvent) => void;
-  private touchEndHandler:  (e: TouchEvent) => void;
-  private rendererTouchStart: (e: TouchEvent) => void;
-  private rendererEl: HTMLElement;
-
-  constructor(
-    container: HTMLElement,
-    rendererEl: HTMLElement,
-    private input: InputState,
-    private cb: MobileUICallbacks,
-    _deprecatedSpriteUrl?: string
-  ) {
-    this.rendererEl = rendererEl;
-    this.injectCSS();
-
-    const ui = document.createElement("div");
-    Object.assign(ui.style, {
-      position:         "absolute",
-      inset:            "0",
-      pointerEvents:    "none",
-      zIndex:           "10",
-      userSelect:       "none",
-      WebkitUserSelect: "none",
-    } as CSSStyleDeclaration);
-    container.appendChild(ui);
-    this.root = ui;
-
-    const joyWrap = this.buildJoystick(ui);
-    this.buildActionButtons(ui);
-
-    // ── Joystick touch ──────────────────────────────────────────────────────
-    joyWrap.addEventListener("touchstart", (e) => {
-      e.preventDefault();
-      const t = e.changedTouches[0];
-      const r = joyWrap.getBoundingClientRect();
-      this.joystick = {
-        active: true,
-        startX: r.left + r.width  / 2,
-        startY: r.top  + r.height / 2,
-        dx: 0, dy: 0,
-        touchId: t.identifier,
-      };
-    }, { passive: false });
-
-    this.touchMoveHandler = (e) => {
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-
-        if (this.joystick.active && t.identifier === this.joystick.touchId) {
-          const MAX = 44;
-          let dx = t.clientX - this.joystick.startX;
-          let dy = t.clientY - this.joystick.startY;
-          const d = Math.hypot(dx, dy);
-          if (d > MAX) { dx *= MAX / d; dy *= MAX / d; }
-          this.joystick.dx = dx;
-          this.joystick.dy = dy;
-          if (this.joystickKnobEl)
-            this.joystickKnobEl.style.transform = `translate(${dx}px,${dy}px)`;
-          const nx = dx / MAX, ny = dy / MAX, DZ = 0.2;
-          this.input.forward  = ny < -DZ;
-          this.input.backward = ny >  DZ;
-          this.input.left     = nx < -DZ;
-          this.input.right    = nx >  DZ;
-        }
-
-        if (this.cameraTouch && t.identifier === this.cameraTouch.id) {
-          const dYaw   = -(t.clientX - this.cameraTouch.lastX) * 0.006;
-          const dPitch = -(t.clientY - this.cameraTouch.lastY) * 0.006;
-          this.cb.rotateCamera(dYaw, dPitch);
-          this.cameraTouch.lastX = t.clientX;
-          this.cameraTouch.lastY = t.clientY;
-        }
-      }
-    };
-    window.addEventListener("touchmove", this.touchMoveHandler, { passive: true });
-
-    this.touchEndHandler = (e) => {
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        if (t.identifier === this.joystick.touchId) {
-          this.joystick.active = false;
-          if (this.joystickKnobEl) this.joystickKnobEl.style.transform = "";
-          this.input.forward = this.input.backward = this.input.left = this.input.right = false;
-        }
-        if (this.cameraTouch && t.identifier === this.cameraTouch.id)
-          this.cameraTouch = null;
-      }
-    };
-    window.addEventListener("touchend", this.touchEndHandler);
-
-    this.rendererTouchStart = (e) => {
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        const tgt = e.target as HTMLElement;
-        if (tgt?.style && window.getComputedStyle(tgt).pointerEvents === "all") continue;
-        if (t.clientX > window.innerWidth / 2 && !this.cameraTouch)
-          this.cameraTouch = { id: t.identifier, lastX: t.clientX, lastY: t.clientY };
-      }
-    };
-    rendererEl.addEventListener("touchstart", this.rendererTouchStart, { passive: true });
-  }
-
-  // ── CSS ────────────────────────────────────────────────────────────────────
-  private injectCSS() {
-    if (document.getElementById("mobileui-styles")) return;
-    const s = document.createElement("style");
-    s.id = "mobileui-styles";
-    s.textContent = INJECTED_CSS;
-    document.head.appendChild(s);
-  }
-
-  // ── Joystick ───────────────────────────────────────────────────────────────
-  private buildJoystick(ui: HTMLElement): HTMLElement {
-    const JOY_SIZE = 140;   // tăng từ 118 → 140, dễ điều hướng hơn
-    const wrap = document.createElement("div");
-    wrap.className = "mui-joy-wrap";
-    Object.assign(wrap.style, {
-      bottom: `max(${SAFE_BOT}px, calc(env(safe-area-inset-bottom,0px) + ${SAFE_BOT}px))`,
-      left:   "max(22px, env(safe-area-inset-left,22px))",
-      width:  `${JOY_SIZE}px`,
-      height: `${JOY_SIZE}px`,
+function cloneModel(source: THREE.Group): THREE.Group {
+  const clone = source.clone(true);
+  const sourceBones: THREE.Bone[] = [];
+  const cloneBones:  THREE.Bone[] = [];
+  source.traverse((n) => { if ((n as THREE.Bone).isBone) sourceBones.push(n as THREE.Bone); });
+  clone.traverse((n)  => { if ((n as THREE.Bone).isBone) cloneBones.push(n as THREE.Bone); });
+  clone.traverse((n) => {
+    if (!(n as THREE.SkinnedMesh).isSkinnedMesh) return;
+    const mesh    = n as THREE.SkinnedMesh;
+    const oldSkel = mesh.skeleton;
+    const newBones = oldSkel.bones.map((b) => {
+      const i = sourceBones.indexOf(b);
+      return i !== -1 ? cloneBones[i] : b;
     });
-    const base = document.createElement("div");
-    base.className = "mui-joy-base";
-    const knob = document.createElement("div");
-    knob.className = "mui-joy-knob";
-    Object.assign(knob.style, { width: "58px", height: "58px" });
-    wrap.appendChild(base);
-    wrap.appendChild(knob);
-    ui.appendChild(wrap);
-    this.joystickKnobEl = knob;
-    return wrap;
+    mesh.bind(new THREE.Skeleton(newBones, oldSkel.boneInverses), mesh.matrixWorld);
+  });
+  return clone;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+export function GameCanvas() {
+  const [stage, setStage]               = useState<Stage>("preload");
+  const [selectedId, setSelectedId]     = useState<CharacterId | null>(null);
+  const [preloadPct, setPreloadPct]     = useState(0);
+  const [preloadLabel, setPreloadLabel] = useState("Đang khởi động...");
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    preloadAllAssets((pct, label) => {
+      setPreloadPct(pct);
+      setPreloadLabel(label);
+    }).then(() => setStage("select"));
+  }, []);
+
+  useEffect(() => {
+    if (stage !== "playing" || !ref.current || !selectedId) return;
+
+    let isCancelled = false;
+    let engine: GameEngine | null = null;
+
+    const initEngine = async () => {
+      if (!ref.current) return;
+
+      const char        = CHARACTERS.find((c) => c.id === selectedId)!;
+      const cachedModel = modelCache.get(char.modelUrl);
+      const model       = cachedModel ? cloneModel(cachedModel) : null;
+      const clips: AnimClipMap = {};
+      for (const key of Object.keys(ANIM_MAP) as AnimKey[]) {
+        const clip = clipCache.get(key);
+        if (clip) clips[key] = clip;
+      }
+
+      const instance = await GameEngine.create(ref.current, char, model, clips);
+
+      if (isCancelled) {
+        instance.dispose();
+        return;
+      }
+
+      engine = instance;
+      // MobileUI được GameEngine tự khởi tạo bên trong constructor,
+      // không cần làm gì thêm ở đây.
+    };
+
+    initEngine().catch((err) => console.error("Lỗi khởi tạo Engine:", err));
+
+    return () => {
+      isCancelled = true;
+      engine?.dispose(); // dispose engine sẽ tự gọi mobileUI.dispose() bên trong
+    };
+  }, [stage, selectedId]);
+
+  const handleSelect = (c: CharacterDef) => {
+    setSelectedId(c.id);
+    setStage("loading");
+    setTimeout(() => setStage("playing"), 1200);
+  };
+
+  if (stage === "preload") return <PreloadScreen pct={preloadPct} label={preloadLabel} />;
+  if (stage === "select")  return <CharacterSelect onConfirm={handleSelect} />;
+  if (stage === "loading") {
+    const c = CHARACTERS.find((x) => x.id === selectedId)!;
+    return <LoadingScreen accent={c.accent} name={c.name} title={c.title} />;
   }
 
-  // ── Action Buttons ─────────────────────────────────────────────────────────
-  private buildActionButtons(ui: HTMLElement) {
-    for (const def of BUTTON_DEFS) {
-      const pos  = RHOMBUS[def.id as keyof typeof RHOMBUS];
-      const half = (def.size - BTN_SIZE) / 2; // bù offset khi size khác BTN_SIZE
+  const c = CHARACTERS.find((x) => x.id === selectedId)!;
+  return (
+    <div className="relative h-screen w-screen overflow-hidden bg-black">
+      <div ref={ref} className="h-full w-full" />
+      <Hud character={c} onExit={() => setStage("select")} />
+    </div>
+  );
+}
 
-      // Tọa độ tuyệt đối so với góc dưới-phải
-      const right  = SAFE_RIGHT + pos.col * STEP - half;
-      const bottom = SAFE_BOT   + pos.row * STEP - half;
+// ── PRELOAD ───────────────────────────────────────────────────────────────────
+function PreloadScreen({ pct, label }: { pct: number; label: string }) {
+  return (
+    <div style={{
+      position: "fixed", inset: 0,
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      fontFamily: "'Segoe UI', sans-serif",
+      color: "white",
+    }}>
+      <img
+        src="/assets/ui/loading-bg.png"
+        alt="Loading"
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", zIndex: 0 }}
+      />
+      <div style={{
+        position: "absolute", inset: 0, zIndex: 1,
+        background: "linear-gradient(to bottom, rgba(0,0,0,0.2), rgba(0,0,0,0.65))",
+      }} />
 
-      const btnEl = document.createElement("div");
-      btnEl.className = "mui-btn";
-      btnEl.setAttribute("data-id", def.id);
-      Object.assign(btnEl.style, {
-        width:  `${def.size}px`,
-        height: `${def.size}px`,
-        right:  `${right}px`,
-        bottom: `${bottom}px`,
-        zIndex: def.id === "jump" ? "5" : "4",
-      });
+      {/* Title */}
+      <div style={{ position: "relative", zIndex: 2, textAlign: "center", marginBottom: 52 }}>
+        <div style={{ fontSize: 10, letterSpacing: "0.45em", color: "rgba(255,255,255,0.55)", textTransform: "uppercase", marginBottom: 14 }}>
+          Hệ thống đang nạp cấu trúc
+        </div>
+        <div style={{
+          fontSize: "clamp(30px,5.5vw,52px)", fontWeight: 900,
+          letterSpacing: "0.08em", color: "#fff",
+          textShadow: "0 4px 24px rgba(0,0,0,0.9)", textTransform: "uppercase",
+        }}>
+          PUNCHAN — ARENA
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: "rgba(255,255,255,0.45)", letterSpacing: "0.22em", textTransform: "uppercase" }}>
+          3D Action RPG
+        </div>
+      </div>
 
-      // Icon – crop giữa ảnh, hiển thị 78% đường kính nút
-      const img = document.createElement("img");
-      img.className  = "mui-btn-img";
-      img.src        = `/assets/ui/${def.img}`;
-      img.draggable  = false;
-      img.alt        = def.id;
+      {/* Progress */}
+      <div style={{ position: "relative", zIndex: 2, width: "min(380px,78vw)" }}>
+        <div style={{ height: 3, background: "rgba(255,255,255,0.12)", borderRadius: 99, overflow: "hidden", marginBottom: 14 }}>
+          <div style={{
+            height: "100%", width: `${pct}%`,
+            background: "linear-gradient(90deg,#00f5d4,#00a8ff)",
+            borderRadius: 99, transition: "width 0.2s ease",
+          }} />
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{
+            fontSize: 10, color: "rgba(255,255,255,0.55)", letterSpacing: "0.06em",
+            maxWidth: "72%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>{label}</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#00f5d4", fontVariantNumeric: "tabular-nums" }}>{pct}%</div>
+        </div>
+      </div>
 
-      // Label
-      const label = document.createElement("span");
-      label.className   = "mui-btn-label";
-      label.textContent = def.id.toUpperCase();
+      {/* Dots */}
+      <div style={{ position: "relative", zIndex: 2, marginTop: 44, display: "flex", gap: 6 }}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} style={{
+            width: 5, height: 5, borderRadius: "50%", background: "#00f5d4",
+            animation: `dotpulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+          }} />
+        ))}
+      </div>
+      <style>{`@keyframes dotpulse{0%,100%{opacity:.2;transform:scale(1)}50%{opacity:1;transform:scale(1.5)}}`}</style>
+    </div>
+  );
+}
 
-      btnEl.appendChild(img);
-      btnEl.appendChild(label);
-      ui.appendChild(btnEl);
+// ── LOADING CHARACTER ─────────────────────────────────────────────────────────
+function LoadingScreen({ accent, name, title }: { accent: string; name: string; title: string }) {
+  return (
+    <div className="relative flex h-screen w-screen items-center justify-center overflow-hidden bg-black">
+      <div className="absolute inset-0 opacity-40"
+        style={{ background: `radial-gradient(circle at 50% 50%,${accent}55,transparent 60%)` }} />
+      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/10" />
+      <div className="relative z-10 text-center">
+        <div className="text-xs uppercase tracking-[0.5em] text-white/40">Đang triệu hồi</div>
+        <div className="mt-4 font-serif text-6xl font-bold tracking-tight text-white"
+          style={{ textShadow: `0 0 30px ${accent}` }}>{name}</div>
+        <div className="mt-2 text-sm uppercase tracking-[0.4em]" style={{ color: accent }}>{title}</div>
+        <div className="mx-auto mt-10 h-px w-64 overflow-hidden bg-white/10">
+          <div className="h-full animate-[loadbar_1.2s_ease-in-out_forwards]"
+            style={{ background: accent, width: "0%" }} />
+        </div>
+      </div>
+      <style>{`@keyframes loadbar{from{width:0%}to{width:100%}}`}</style>
+    </div>
+  );
+}
 
-      const action = this.resolveAction(def.id);
-      const baseBox = this.idleBoxShadow(def.glow);
+// ── HUD – gọn, sạch, không rác ───────────────────────────────────────────────
+function Hud({ character, onExit }: { character: CharacterDef; onExit: () => void }) {
+  return (
+    <>
+      {/* ── Góc trên-trái: Avatar + tên + thanh HP/Stamina ── */}
+      <div className="pointer-events-none absolute left-3 top-3"
+        style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
 
-      btnEl.addEventListener("touchstart", (e) => {
-        e.preventDefault();
-        btnEl.classList.add("pressed");
-        btnEl.style.boxShadow = `
-          0 6px 24px rgba(0,0,0,0.6),
-          0 1px 0 rgba(255,255,255,0.14) inset,
-          0 -1px 0 rgba(0,0,0,0.35) inset,
-          0 0 22px 5px ${def.glow}90,
-          0 0 55px 14px ${def.glow}30
-        `;
-        const rip = document.createElement("div");
-        rip.className  = "mui-ripple-el";
-        rip.style.background = `radial-gradient(circle, ${def.glow}60 0%, transparent 68%)`;
-        btnEl.appendChild(rip);
-        rip.addEventListener("animationend", () => rip.remove());
-        action();
-      }, { passive: false });
+        {/* Avatar tròn */}
+        <div style={{
+          width: 48, height: 48, flexShrink: 0,
+          borderRadius: "50%",
+          border: `2px solid ${character.accent}`,
+          background: `${character.accent}22`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 20, fontWeight: 800, color: "#fff",
+          boxShadow: `0 0 18px ${character.accent}55`,
+          backdropFilter: "blur(8px)",
+        }}>
+          {character.name[0]}
+        </div>
 
-      btnEl.addEventListener("touchend", () => {
-        btnEl.classList.remove("pressed");
-        if (def.id === "sprint" && this.sprintActive) return;
-        btnEl.style.boxShadow = baseBox;
-      });
-    }
-  }
+        {/* Info panel */}
+        <div style={{
+          background: "rgba(0,0,0,0.52)",
+          border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: 10,
+          backdropFilter: "blur(14px)",
+          padding: "8px 14px 10px",
+          minWidth: 170,
+        }}>
+          {/* Name + class */}
+          <div style={{ display: "flex", alignItems: "baseline", gap: 7, marginBottom: 7 }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: "#fff", letterSpacing: "0.02em" }}>
+              {character.name}
+            </span>
+            <span style={{ fontSize: 9, color: character.accent, letterSpacing: "0.18em", textTransform: "uppercase", fontWeight: 600 }}>
+              LV.1 · {character.title}
+            </span>
+          </div>
 
-  private idleBoxShadow(glow: string) {
-    return `
-      0 6px 24px rgba(0,0,0,0.6),
-      0 1px 0 rgba(255,255,255,0.14) inset,
-      0 -1px 0 rgba(0,0,0,0.35) inset,
-      0 0 0 0 ${glow}00
-    `;
-  }
+          {/* HP bar */}
+          <div style={{ marginBottom: 5 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.45)", letterSpacing: "0.12em" }}>HP</span>
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.55)", fontVariantNumeric: "tabular-nums" }}>100 / 100</span>
+            </div>
+            <div style={{ height: 5, background: "rgba(255,255,255,0.1)", borderRadius: 99, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: "100%", borderRadius: 99, background: "linear-gradient(90deg,#f87171,#fb923c)" }} />
+            </div>
+          </div>
 
-  private resolveAction(id: string): () => void {
-    switch (id) {
-      case "jump":    return () => this.cb.jump();
-      case "punch":   return () => this.cb.attack("punch");
-      case "kick":    return () => this.cb.attack("kick");
-      case "special": return () => this.cb.attack("mmaKick");
-      case "sprint":  return () => this.toggleSprint();
-      default:        return () => {};
-    }
-  }
+          {/* Stamina bar */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.45)", letterSpacing: "0.12em" }}>STAMINA</span>
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.55)", fontVariantNumeric: "tabular-nums" }}>100</span>
+            </div>
+            <div style={{ height: 5, background: "rgba(255,255,255,0.1)", borderRadius: 99, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: "100%", borderRadius: 99, background: "linear-gradient(90deg,#34d399,#06b6d4)" }} />
+            </div>
+          </div>
+        </div>
+      </div>
 
-  private toggleSprint() {
-    this.sprintActive = !this.sprintActive;
-    this.input.sprint = this.sprintActive;
-    const btn = this.root.querySelector('[data-id="sprint"]') as HTMLElement | null;
-    if (!btn) return;
-    if (this.sprintActive) {
-      btn.classList.add("sprint-on");
-      btn.style.boxShadow = `
-        0 6px 24px rgba(0,0,0,0.6),
-        0 1px 0 rgba(255,255,255,0.14) inset,
-        0 -1px 0 rgba(0,0,0,0.35) inset,
-        0 0 32px 8px #2dd4bf90,
-        0 0 65px 18px #2dd4bf30
-      `;
-    } else {
-      btn.classList.remove("sprint-on");
-      btn.style.boxShadow = this.idleBoxShadow("#2dd4bf");
-    }
-  }
-
-  dispose() {
-    window.removeEventListener("touchmove", this.touchMoveHandler);
-    window.removeEventListener("touchend",  this.touchEndHandler);
-    this.rendererEl.removeEventListener("touchstart", this.rendererTouchStart);
-    this.root.parentElement?.removeChild(this.root);
-    document.getElementById("mobileui-styles")?.remove();
-  }
-    }
+      {/* ── Góc trên-phải: nút đổi nhân vật gọn ── */}
+      <button
+        onClick={onExit}
+        style={{
+          position: "absolute", top: 12, right: 12,
+          padding: "7px 16px",
+          fontSize: 10, letterSpacing: "0.2em", textTransform: "uppercase",
+          color: "rgba(255,255,255,0.75)",
+          background: "rgba(0,0,0,0.45)",
+          border: "1px solid rgba(255,255,255,0.18)",
+          borderRadius: 8,
+          backdropFilter: "blur(12px)",
+          cursor: "pointer",
+          transition: "background 0.15s",
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.1)")}
+        onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(0,0,0,0.45)")}
+      >
+        Đổi nhân vật
+      </button>
+    </>
+  );
+      }
+        
