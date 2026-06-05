@@ -47,7 +47,6 @@ export function optimizeHubScene(
     colliderRadius: number
   ) => {
     const modelNames = [...new Set(items.map((i) => i.modelName))];
-
     for (const modelName of modelNames) {
       const sourceModel = modelCache.get(modelName);
       if (!sourceModel) continue;
@@ -72,7 +71,6 @@ export function optimizeHubScene(
         scene.add(im);
       });
 
-      // Đăng ký collider nếu cần
       if (addCollision) {
         instances.forEach((item) => {
           collisionManager.setCollider(
@@ -85,25 +83,31 @@ export function optimizeHubScene(
     }
   };
 
-  // 1. Cây ngoài
-  addInstancedGroup(generateScatter(OUTER_TREES, 20, 40, 68, [1.2, 2.0]), true, true, 1.0);
-  // 2. Cây giữa
-  addInstancedGroup(generateScatter(MID_TREES, 8, 18, 38, [1.0, 1.6]), true, true, 0.8);
-  // 3. Bụi cỏ, đá (không shadow, không collider)
-  addInstancedGroup(generateScatter(GROUND_ITEMS, 25, 6, 55, [0.5, 1.2]), false, false, 0);
-  // 4. Cây đỏ trung tâm
+  // ── GIẢM SỐ LƯỢNG CÂY (tối ưu) ──────────────────────────────────────────
+  // 1. Vòng ngoài: giảm 20 → 12
+  addInstancedGroup(generateScatter(OUTER_TREES, 12, 40, 68, [1.2, 2.0]), true, true, 0.8);
+  // 2. Vòng giữa: giảm 8 → 5
+  addInstancedGroup(generateScatter(MID_TREES, 5, 18, 38, [1.0, 1.6]), true, true, 0.7);
+  // 3. Bụi cỏ, hoa, nấm: giảm 25 → 15 (không shadow, không collider)
+  addInstancedGroup(generateScatter(["Bush_Common", "Fern_1", "Mushroom_Laetiporus", "Plant_1"], 15, 6, 55, [0.6, 1.1]), false, false, 0);
+
+  // ── ĐÁ TÁCH RIÊNG – CÓ COLLIDER ──────────────────────────────────────────
+  const rockItems = generateScatter(["Rock_Medium_1", "Rock_Medium_2"], 8, 10, 50, [0.6, 1.0]);
+  addInstancedGroup(rockItems, false, true, 0.5);
+
+  // ── CÂY ĐỎ TRUNG TÂM (sửa collider to quá) ──────────────────────────────
+  // scale 5.0, colliderRadius giảm từ 3.0 xuống 1.0 → bán kính cuối = 5.0
   addInstancedGroup(
     [{ modelName: "TwistedTree_1", x: 0, z: 0, scale: 5.0, rotY: Math.PI * 0.15 }],
-    true, true, 3.0
+    true, true, 1.0
   );
-  // 5. Cây TwistedTree phụ
+  // Cây phụ quanh gốc: giảm số lượng, chỉ lấy 2 cây
   addInstancedGroup(
     [
       { modelName: "TwistedTree_3", x: -6, z: 3, scale: 2.8, rotY: 1.1 },
       { modelName: "TwistedTree_5", x: 5, z: -4, scale: 2.2, rotY: 2.4 },
-      { modelName: "TwistedTree_2", x: -3, z: -6, scale: 1.8, rotY: 0.7 },
     ],
-    true, true, 1.5
+    true, true, 1.2
   );
 
   console.log("✅ HubCollisionOptimizer: InstancedMesh + Collider hoàn tất!");
