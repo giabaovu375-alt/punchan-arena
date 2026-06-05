@@ -176,7 +176,7 @@ function PreloadScreen({ pct, label }: { pct: number; label: string }) {
     }}>
       {/* Cập nhật trỏ thẳng vào bức ảnh PunChan - Arena sịn mịn của ní */}
       <img
-        src="/assets/ui/1000185476.png"
+        src="/assets/ui/loading-bg.png"
         alt="PunChan - Arena KeyArt"
         style={{
           position:"absolute", inset:0,
