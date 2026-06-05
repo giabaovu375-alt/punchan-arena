@@ -1,100 +1,91 @@
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { BaseScene } from './BaseScene';
-import { eventBus } from '../core/EventBus';
-import { GameEvents } from '../types/events';
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { BaseScene } from "./BaseScene";
+import { eventBus } from "../core/EventBus";
+import { GameEvents } from "../types/events";
+import { collisionManager } from "../core/CollisionManager";
 
-import { HUB_SPAWN } from './hub/HubConfig';
-import { setupLighting } from './hub/HubLighting';
-import { setupGround } from './hub/HubGround';
-import { setupEnvironment, loadAllModels, type Collider } from './hub/HubEnvironment';
-import { setupPortals, type PortalMarker } from './hub/HubPortal';
-import { createLeafParticles, tickLeafParticles, type LeafParticleSystem } from './hub/HubParticles';
+import { ALL_MODEL_NAMES, MODEL_BASE } from "./hub/HubConfig";
+import { setupLighting } from "./hub/HubLighting";
+import { setupGround } from "./hub/HubGround";
+import { optimizeHubScene } from "./hub/HubCollisionOptimizer";
+import { setupPortals, type PortalMarker } from "./hub/HubPortal";
+import { createLeafParticles, tickLeafParticles, type LeafParticleSystem } from "./hub/HubParticles";
+
+async function loadAllModels(loader: GLTFLoader): Promise<Map<string, THREE.Group>> {
+  const cache = new Map<string, THREE.Group>();
+  const unique = [...new Set(ALL_MODEL_NAMES)];
+  await Promise.all(unique.map(name =>
+    new Promise<void>((resolve) => {
+      loader.load(
+        `${MODEL_BASE}/${name}.gltf`,
+        (gltf) => { cache.set(name, gltf.scene); resolve(); },
+        undefined,
+        (err) => { console.warn(`⚠️ Không load được ${name}`, err); resolve(); }
+      );
+    })
+  ));
+  return cache;
+}
 
 export class HubScene extends BaseScene {
-  private loader: GLTFLoader;
+  private loader = new GLTFLoader();
   private modelCache: Map<string, THREE.Group> = new Map();
   private portalMarkers: PortalMarker[] = [];
   private particleSystem: LeafParticleSystem | null = null;
-  private colliders: Collider[] = [];
   private elapsed = 0;
 
-  public scene: THREE.Scene; // public để GameEngine gán
+  public scene: THREE.Scene;
 
   constructor() {
-    super('HubScene');
-    this.loader = new GLTFLoader();
+    super("HubScene");
     this.scene = new THREE.Scene();
   }
 
   protected async onLoad(): Promise<void> {
-    console.log('🌅 HubScene loading...');
-
+    console.log("🌅 HubScene loading...");
     try {
-      // Load model
       this.modelCache = await loadAllModels(this.loader);
-
-      // Setup cảnh
       setupLighting(this.scene);
       setupGround(this.scene);
-      this.colliders = await setupEnvironment(this.scene, this.modelCache);
+      optimizeHubScene(this.scene, this.modelCache); // Tối ưu + Collider
       this.portalMarkers = setupPortals(this.scene);
       this.particleSystem = createLeafParticles(this.scene);
-
-      console.log('✅ HubScene loaded (sunset edition)!');
-      eventBus.emit(GameEvents.SCENE_LOADED, { sceneName: 'HubScene' });
+      console.log("✅ HubScene loaded!");
+      eventBus.emit(GameEvents.SCENE_LOADED, { sceneName: "HubScene" });
     } catch (error) {
-      console.error('Error loading HubScene:', error);
+      console.error("Error loading HubScene:", error);
       throw error;
     }
   }
 
   protected async onUnload(): Promise<void> {
-    console.log('🌅 HubScene unloading...');
+    console.log("🌅 HubScene unloading...");
+    collisionManager.clear(); // XÓA TOÀN BỘ COLLIDER
     this.modelCache.clear();
     this.portalMarkers = [];
     this.particleSystem = null;
-    this.colliders = [];
   }
 
   protected onUpdate(deltaTime: number): void {
     this.elapsed += deltaTime;
-
-    // Portal ring xoay
     for (const marker of this.portalMarkers) {
-      if (marker.mesh.children[0]) {
-        marker.mesh.children[0].rotation.z += deltaTime * 0.3;
-      }
+      if (marker.mesh.children[0]) marker.mesh.children[0].rotation.z += deltaTime * 0.3;
     }
-
-    // Particles
-    if (this.particleSystem) {
-      tickLeafParticles(this.particleSystem, deltaTime);
-    }
+    if (this.particleSystem) tickLeafParticles(this.particleSystem, deltaTime);
   }
 
   public update(deltaTime: number): void {
-    if (typeof (this as any).onUpdate === 'function') {
-      (this as any).onUpdate(deltaTime);
-    } else {
-      this.onUpdate(deltaTime);
-    }
+    this.onUpdate(deltaTime);
   }
 
   public checkPortals(playerPos: THREE.Vector3): string | null {
-    if (!this.portalMarkers || this.portalMarkers.length === 0) return null;
+    if (!this.portalMarkers.length) return null;
     for (const marker of this.portalMarkers) {
       const dx = playerPos.x - marker.position.x;
       const dz = playerPos.z - marker.position.z;
-      if (Math.sqrt(dx * dx + dz * dz) < marker.radius) {
-        return marker.targetScene;
-      }
+      if (Math.sqrt(dx * dx + dz * dz) < marker.radius) return marker.targetScene;
     }
     return null;
   }
-
-  /** Trả về danh sách collider cho PlayerController */
-  public getColliders(): Collider[] {
-    return this.colliders;
-  }
-  }
+}
