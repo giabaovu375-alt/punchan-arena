@@ -486,5 +486,5 @@ export class HubScene extends BaseScene {
   private setupParticles(): void {
     this.particleSystem = createLeafParticles(this.scene);
   }
-      }
+}
       
