@@ -8,7 +8,6 @@ import { MobileUI } from "./MobileUI";
 import { DialogueUI, fadeToWhite } from "./DialogueUI";
 import { INTRO_NPC_DIALOGUE } from "./dialogues";
 
-// Intro scene
 import {
   buildIntroScene,
   tickIntroScene,
@@ -16,14 +15,9 @@ import {
   type IntroSceneHandles,
 } from "./IntroScene";
 
-// Hub scene
 import { HubScene } from "./scenes/HubScene";
-
-// Event system
 import { eventBus } from "./core/EventBus";
 import { GameEvents } from "./types/events";
-
-// Screen & Collision managers
 import { ScreenManager } from "./core/ScreenManager";
 import { collisionManager } from "./core/CollisionManager";
 
@@ -49,9 +43,12 @@ export class GameEngine {
   private playerHeight = 1.6;
   private animTime = 0;
 
+  // ── Camera ────────────────────────────────────────────────────────────────
   private cameraYaw = 0;        private targetYaw = 0;
-  private cameraPitch = -0.25;  private targetPitch = -0.25;
-  private cameraDistance = 6;   private targetDistance = 6;
+  private cameraPitch = -0.18;  private targetPitch = -0.18;
+  private cameraDistance = 3.8; private targetDistance = 3.8;
+  private readonly CAM_DIST_MIN = 2.0;
+  private readonly CAM_DIST_MAX = 10.0;
   private isRotating = false;
   private lastMouse = { x: 0, y: 0 };
 
@@ -60,6 +57,7 @@ export class GameEngine {
   private hud!: HUD;
   private mobileUI: MobileUI | null = null;
   private dialogue!: DialogueUI;
+  private loadingOverlay: HTMLElement | null = null;
 
   private sceneMode: SceneMode = "intro";
   private introHandles: IntroSceneHandles | null = null;
@@ -73,7 +71,7 @@ export class GameEngine {
   private _tgt       = new THREE.Vector3();
   private _camTarget = new THREE.Vector3();
 
-  // ── Constructor private – Bắt buộc gọi thông qua static create ──────────
+  // ── Constructor private ───────────────────────────────────────────────────
   private constructor(
     container: HTMLElement,
     character: CharacterDef,
@@ -84,21 +82,24 @@ export class GameEngine {
     this.character = character;
     this.isMobile = ("ontouchstart" in window) || navigator.maxTouchPoints > 0;
 
-    // ── Scene / camera / renderer ───────────────────────────────────────────
+    // ── Scene ─────────────────────────────────────────────────────────────
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x9bc4e2);
     this.scene.fog = new THREE.Fog(0x9bc4e2, 40, 180);
 
+    // ── Camera – FOV 52 nhân vật to hơn, ít méo hơn ───────────────────────
     this.camera = new THREE.PerspectiveCamera(
-      60, container.clientWidth / container.clientHeight, 0.1, 600,
+      52, container.clientWidth / container.clientHeight, 0.1, 600,
     );
 
+    // ── Renderer – tối ưu theo thiết bị ───────────────────────────────────
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true, powerPreference: "high-performance",
+      antialias: !this.isMobile, // tắt antialias mobile → tiết kiệm GPU
+      powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.isMobile ? 1.5 : 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.isMobile ? 1 : 1.5));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = !this.isMobile; // shadow chỉ desktop
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
@@ -106,14 +107,12 @@ export class GameEngine {
     container.style.position = "relative";
     container.appendChild(this.renderer.domElement);
 
-    // ── Screen Manager ──────────────────────────────────────────────────────
     this.screenManager = new ScreenManager();
 
-    // ── Player rig ──────────────────────────────────────────────────────────
+    // ── Player rig ────────────────────────────────────────────────────────
     this.player = new THREE.Group();
     this.player.name = "PlayerRig";
 
-    // ── Sub-controllers ─────────────────────────────────────────────────────
     this.playerCtrl = new PlayerController({
       character,
       worldRadius: 140,
@@ -125,7 +124,6 @@ export class GameEngine {
       onComboChanged: (count) => this.hud.flashCombo(count),
     });
 
-    // ── Model ────────────────────────────────────────────────────────────────
     if (model) {
       const { modelRoot, playerHeight, footOffset } = this.animCtrl.setupModel(this.player, model, clips);
       this.modelRoot = modelRoot;
@@ -136,10 +134,7 @@ export class GameEngine {
     }
     this.scene.add(this.player);
 
-    // ── Dialogue UI ─────────────────────────────────────────────────────────
     this.dialogue = new DialogueUI(container);
-
-    // ── Bind events + UI ────────────────────────────────────────────────────
     this.playerCtrl.bindKeyboard();
     this.bindMouseAndResize();
 
@@ -156,27 +151,70 @@ export class GameEngine {
           rotateCamera: (dYaw, dPitch) => {
             this.targetYaw   += dYaw;
             this.targetPitch += dPitch;
-            this.targetPitch = Math.max(-1.2, Math.min(0.3, this.targetPitch));
+            this.targetPitch  = Math.max(-1.2, Math.min(0.3, this.targetPitch));
           },
         },
-        "/assets/ui/1000185469.png"  // Cắt sprite sheet chuẩn xác không lo lỗi load ảnh
+        "/assets/ui/1000185469.png"
       );
     }
 
-    // Khởi động intro scene và bắt đầu game loop
     this.loadIntroScene();
     this.start();
   }
 
-  // ── Khởi tạo bất đồng bộ chính thức phục vụ vòng đời React Component ──
   public static async create(
     container: HTMLElement,
     character: CharacterDef,
     model: THREE.Group | null,
     clips: AnimClipMap,
   ): Promise<GameEngine> {
-    // Đảm bảo trả về Instance hoàn chỉnh dạng Promise để cơ chế 'await' bên React không bị treo
     return new GameEngine(container, character, model, clips);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // LOADING OVERLAY
+  // ═══════════════════════════════════════════════════════════════════════════
+  private showLoadingOverlay(text = "Đang tải...") {
+    if (this.loadingOverlay) return;
+    const el = document.createElement("div");
+    el.style.cssText = `
+      position:absolute; inset:0; z-index:999;
+      display:flex; flex-direction:column;
+      align-items:center; justify-content:center;
+      background:rgba(0,0,0,0.78);
+      backdrop-filter:blur(8px);
+      -webkit-backdrop-filter:blur(8px);
+      font-family:'SF Pro Display','Helvetica Neue',sans-serif;
+      color:#fff;
+      gap:20px;
+      opacity:0;
+      transition:opacity 0.25s ease;
+    `;
+    el.innerHTML = `
+      <div style="
+        width:46px; height:46px; border-radius:50%;
+        border:3px solid rgba(255,255,255,0.1);
+        border-top-color:#00f5d4;
+        animation:ge-spin 0.85s linear infinite;
+      "></div>
+      <div style="
+        font-size:12px; letter-spacing:0.22em;
+        text-transform:uppercase; color:rgba(255,255,255,0.7);
+      ">${text}</div>
+      <style>@keyframes ge-spin{to{transform:rotate(360deg)}}</style>
+    `;
+    this.container.appendChild(el);
+    this.loadingOverlay = el;
+    // fade in sau 1 frame
+    requestAnimationFrame(() => { if (el.isConnected) el.style.opacity = "1"; });
+  }
+
+  private hideLoadingOverlay() {
+    if (!this.loadingOverlay) return;
+    const el = this.loadingOverlay;
+    this.loadingOverlay = null;
+    el.style.opacity = "0";
+    setTimeout(() => el.parentElement?.removeChild(el), 300);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -196,29 +234,29 @@ export class GameEngine {
       this.hubScene.unload().catch(err => console.error("unload hub error:", err));
       this.hubScene = null;
     }
-
     collisionManager.clear();
     this.clearThreeScene(this.scene);
     this.scene.add(this.player);
-
     this.introHandles = buildIntroScene(this.scene, this.isMobile);
     this.playerCtrl.setColliders([]);
-
     if (this.player?.position && PLAYER_SPAWN) {
       this.player.position.copy(PLAYER_SPAWN);
     }
-
     this.sceneMode = "intro";
     this.npcTriggered = false;
     this.lastPortalTarget = null;
   }
 
   private async switchToHub() {
+    // Hiện overlay thay vì màn trắng
+    this.showLoadingOverlay("Đang tải map...");
+    // Nhường 1 frame để overlay render trước khi block main thread
+    await new Promise<void>((r) => setTimeout(r, 50));
+
     this.clearThreeScene(this.scene);
     this.scene.remove(this.player);
 
     const hub = new HubScene();
-
     let loaded = false;
     try {
       await hub.load();
@@ -231,6 +269,7 @@ export class GameEngine {
       this.scene.add(this.player);
       this.sceneMode = "intro";
       this.npcTriggered = false;
+      this.hideLoadingOverlay();
       return;
     }
 
@@ -238,14 +277,15 @@ export class GameEngine {
     this.hubScene = hub;
     this.playerCtrl.setColliders([]);
     this.player.position.set(0, 0, 30);
-
     this.sceneMode = "hub";
     this.introHandles = null;
     this.lastPortalTarget = null;
+
+    this.hideLoadingOverlay();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // PLACEHOLDER (khi không có model)
+  // PLACEHOLDER
   // ═══════════════════════════════════════════════════════════════════════════
   private createPlaceholder(): THREE.Object3D {
     const group = new THREE.Group();
@@ -301,9 +341,13 @@ export class GameEngine {
     this.lastMouse = { x: e.clientX, y: e.clientY };
   };
 
+  // Scroll chuột / pinch → zoom in-out nhân vật
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
-    this.targetDistance = Math.max(2.5, Math.min(18, this.targetDistance + e.deltaY * 0.01));
+    this.targetDistance = Math.max(
+      this.CAM_DIST_MIN,
+      Math.min(this.CAM_DIST_MAX, this.targetDistance + e.deltaY * 0.012),
+    );
   };
 
   private onResize = () => {
@@ -315,21 +359,53 @@ export class GameEngine {
   };
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // PINCH-TO-ZOOM (mobile)
+  // ═══════════════════════════════════════════════════════════════════════════
+  private pinchStartDist = 0;
+  private pinchStartCamDist = 0;
+
+  private onTouchStart = (e: TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      this.pinchStartDist    = Math.hypot(dx, dy);
+      this.pinchStartCamDist = this.targetDistance;
+    }
+  };
+
+  private onTouchMove = (e: TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dx   = e.touches[0].clientX - e.touches[1].clientX;
+      const dy   = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      const scale = this.pinchStartDist / dist; // > 1 = thu nhỏ, < 1 = phóng to
+      this.targetDistance = Math.max(
+        this.CAM_DIST_MIN,
+        Math.min(this.CAM_DIST_MAX, this.pinchStartCamDist * scale),
+      );
+    }
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // GAME LOOP
   // ═══════════════════════════════════════════════════════════════════════════
   private start() {
+    // Bind pinch zoom cho mobile
+    if (this.isMobile) {
+      this.renderer.domElement.addEventListener("touchstart", this.onTouchStart, { passive: true });
+      this.renderer.domElement.addEventListener("touchmove",  this.onTouchMove,  { passive: true });
+    }
+
     this.timer.update();
     const tick = () => {
       if (this.disposed) return;
       this.timer.update();
       const dt = Math.min(this.timer.getDelta(), 0.05);
       this.update(dt);
-
       const activeScene = this.sceneMode === "hub" && this.hubScene
         ? this.hubScene.scene
         : this.scene;
       this.renderer.render(activeScene, this.camera);
-
       this.rafId = requestAnimationFrame(tick);
     };
     this.rafId = requestAnimationFrame(tick);
@@ -338,7 +414,7 @@ export class GameEngine {
   private update(dt: number) {
     const lk = 1 - Math.exp(-12 * dt);
     this.cameraYaw       = lerpAngle(this.cameraYaw, this.targetYaw, lk);
-    this.cameraPitch    += (this.targetPitch - this.cameraPitch) * lk;
+    this.cameraPitch    += (this.targetPitch    - this.cameraPitch)    * lk;
     this.cameraDistance += (this.targetDistance - this.cameraDistance) * lk;
 
     const locked = this.dialogue.isVisible();
@@ -348,13 +424,12 @@ export class GameEngine {
 
     if (!locked) {
       const result = this.playerCtrl.update(dt, this.cameraYaw, this.player);
-      moving = result.moving;
+      moving    = result.moving;
       sprinting = result.sprinting;
-      onGround = result.onGround;
+      onGround  = result.onGround;
       playerPos = this.player.position.clone();
     }
 
-    // ── Va chạm ──────────────────────────────────────────────────────────
     const playerRadius = 0.4;
     const resolvedPos = collisionManager.resolveCollisions(playerPos, playerRadius, "player");
     this.player.position.copy(resolvedPos);
@@ -366,30 +441,27 @@ export class GameEngine {
     if (this.bodyParts) {
       const bob = moving && onGround
         ? Math.sin(this.animTime * 14) * 0.06
-        : Math.sin(this.animTime * 2) * 0.03;
+        : Math.sin(this.animTime * 2)  * 0.03;
       this.bodyParts.body.position.y = 0.9 + bob;
       this.bodyParts.head.position.y = 1.75 + bob;
     }
 
-    // ── Scene‑specific logic ──────────────────────────────────────────────
+    // ── Scene logic ───────────────────────────────────────────────────────
     if (this.sceneMode === "intro" && this.introHandles) {
       tickIntroScene(this.introHandles, dt);
-
       if (!this.npcTriggered && !locked && this.introHandles.checkNPCProximity(this.player.position)) {
         this.npcTriggered = true;
         this.dialogue.show(
           INTRO_NPC_DIALOGUE.npcName,
           INTRO_NPC_DIALOGUE.lines,
           () => {
-            fadeToWhite(this.container, () => {
-              this.switchToHub().catch(err => console.error(err));
-            });
+            // Không dùng fadeToWhite nữa – overlay đã lo
+            this.switchToHub().catch(err => console.error(err));
           },
         );
       }
     } else if (this.sceneMode === "hub" && this.hubScene && typeof this.hubScene.checkPortals === "function") {
       this.hubScene.update(dt);
-
       if (!locked && !isAttacking) {
         const target = this.hubScene.checkPortals(this.player.position);
         if (target) {
@@ -409,6 +481,7 @@ export class GameEngine {
 
     this.dialogue.update(dt);
 
+    // ── Camera ────────────────────────────────────────────────────────────
     const camOff = this._camOff.set(
       Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch),
       -Math.sin(this.cameraPitch),
@@ -441,6 +514,12 @@ export class GameEngine {
     window.removeEventListener("mousemove", this.onMouseMove);
     window.removeEventListener("resize",    this.onResize);
 
+    if (this.isMobile) {
+      this.renderer.domElement.removeEventListener("touchstart", this.onTouchStart);
+      this.renderer.domElement.removeEventListener("touchmove",  this.onTouchMove);
+    }
+
+    this.hideLoadingOverlay();
     this.mobileUI?.dispose();
     this.hud.dispose();
     this.dialogue.dispose();
@@ -450,4 +529,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-      }
+        }
