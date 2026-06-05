@@ -70,21 +70,12 @@ async function preloadAllAssets(onProgress: (pct: number, label: string) => void
   ));
 }
 
-/**
- * Deep clone GLB model + rebind skeleton đúng cách.
- * THREE.Group.clone() không tự rebind SkinnedMesh → skeleton vẫn trỏ vào
- * source bones → AnimationMixer drive sai object → T-pose.
- */
 function cloneModel(source: THREE.Group): THREE.Group {
   const clone = source.clone(true);
-
-  // Thu thập bones theo thứ tự traversal (giữ nguyên index mapping)
   const sourceBones: THREE.Bone[] = [];
   const cloneBones:  THREE.Bone[] = [];
   source.traverse((n) => { if ((n as THREE.Bone).isBone) sourceBones.push(n as THREE.Bone); });
   clone.traverse((n)  => { if ((n as THREE.Bone).isBone) cloneBones.push(n as THREE.Bone);  });
-
-  // Rebind từng SkinnedMesh với skeleton mới trỏ đúng vào clone bones
   clone.traverse((n) => {
     if (!(n as THREE.SkinnedMesh).isSkinnedMesh) return;
     const mesh    = n as THREE.SkinnedMesh;
@@ -95,7 +86,6 @@ function cloneModel(source: THREE.Group): THREE.Group {
     });
     mesh.bind(new THREE.Skeleton(newBones, oldSkel.boneInverses), mesh.matrixWorld);
   });
-
   return clone;
 }
 
@@ -113,23 +103,43 @@ export function GameCanvas() {
     }).then(() => setStage("select"));
   }, []);
 
+  // ── ĐỒNG BỘ HÓA ĐOẠN RAFT GAME ENGINE SỬ DỤNG ASYNC/AWAIT ────────────────
   useEffect(() => {
     if (stage !== "playing" || !ref.current || !selectedId) return;
 
-    const char        = CHARACTERS.find((c) => c.id === selectedId)!;
-    const cachedModel = modelCache.get(char.modelUrl);
+    let isCancelled = false;
+    let engine: GameEngine | null = null;
 
-    // ✅ Dùng cloneModel thay vì .clone() trực tiếp
-    const model = cachedModel ? cloneModel(cachedModel) : null;
+    const initEngine = async () => {
+      const char        = CHARACTERS.find((c) => c.id === selectedId)!;
+      const cachedModel = modelCache.get(char.modelUrl);
+      const model = cachedModel ? cloneModel(cachedModel) : null;
 
-    const clips: AnimClipMap = {};
-    for (const key of Object.keys(ANIM_MAP) as AnimKey[]) {
-      const clip = clipCache.get(key);
-      if (clip) clips[key] = clip;
-    }
+      const clips: AnimClipMap = {};
+      for (const key of Object.keys(ANIM_MAP) as AnimKey[]) {
+        const clip = clipCache.get(key);
+        if (clip) clips[key] = clip;
+      }
 
-    const engine = new GameEngine(ref.current, char, model, clips);
-    return () => engine.dispose();
+      // Gọi thông qua hàm tĩnh bất đồng bộ đã sửa ở GameEngine.ts
+      const instance = await GameEngine.create(ref.current!, char, model, clips);
+      
+      if (isCancelled) {
+        // Nếu component bị unmount trong lúc đang await nạp map, dọn dẹp ngay lập tức
+        instance.dispose();
+      } else {
+        engine = instance;
+      }
+    };
+
+    initEngine().catch(err => console.error("Lỗi vòng đời khởi tạo Engine:", err));
+
+    return () => {
+      isCancelled = true;
+      if (engine) {
+        engine.dispose();
+      }
+    };
   }, [stage, selectedId]);
 
   const handleSelect = (c: CharacterDef) => {
@@ -154,37 +164,53 @@ export function GameCanvas() {
   );
 }
 
+// ── MÀN HÌNH PRELOAD SỬ DỤNG ẢNH KEY ART ĐỘC QUYỀN ──────────────────────────
 function PreloadScreen({ pct, label }: { pct: number; label: string }) {
   return (
     <div style={{
-      position:"fixed", inset:0, background:"#060810",
+      position:"fixed", inset:0,
       display:"flex", flexDirection:"column",
       alignItems:"center", justifyContent:"center",
       fontFamily:"'Segoe UI', sans-serif",
+      color:"white",
     }}>
-      <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 50% 50%, #0d1535 0%, #060810 70%)" }}/>
+      {/* Cập nhật trỏ thẳng vào bức ảnh PunChan - Arena sịn mịn của ní */}
+      <img
+        src="/assets/ui/1000185476.png"
+        alt="PunChan - Arena KeyArt"
+        style={{
+          position:"absolute", inset:0,
+          width:"100%", height:"100%",
+          objectFit:"cover",
+          zIndex:0,
+        }}
+      />
+
       <div style={{
         position:"absolute", inset:0,
-        backgroundImage:`linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)`,
-        backgroundSize:"50px 50px",
+        background:"linear-gradient(to bottom, rgba(0,0,0,0.2), rgba(0,0,0,0.6))",
+        zIndex:1,
       }}/>
+
       <div style={{ position:"relative", zIndex:2, textAlign:"center", marginBottom:56 }}>
-        <div style={{ fontSize:11, letterSpacing:"0.4em", color:"rgba(255,255,255,0.25)", textTransform:"uppercase", marginBottom:12 }}>Đang khởi động</div>
-        <div style={{ fontSize:"clamp(32px,6vw,56px)", fontWeight:900, letterSpacing:"0.08em", color:"#fff", textShadow:"0 0 60px rgba(100,140,255,0.4)", textTransform:"uppercase" }}>PLAY FRAME FORGE</div>
-        <div style={{ marginTop:8, fontSize:12, color:"rgba(255,255,255,0.2)", letterSpacing:"0.2em", textTransform:"uppercase" }}>3D Action RPG</div>
+        <div style={{ fontSize:11, letterSpacing:"0.4em", color:"rgba(255,255,255,0.7)", textTransform:"uppercase", marginBottom:12 }}>Hệ thống đang nạp cấu trúc</div>
+        <div style={{ fontSize:"clamp(32px,6vw,56px)", fontWeight:900, letterSpacing:"0.08em", color:"#fff", textShadow:"0 4px 20px rgba(0,0,0,0.8)", textTransform:"uppercase" }}>PUNCHAN - ARENA</div>
+        <div style={{ marginTop:8, fontSize:12, color:"rgba(255,255,255,0.6)", letterSpacing:"0.2em", textTransform:"uppercase" }}>3D Action RPG Framework</div>
       </div>
+
       <div style={{ position:"relative", zIndex:2, width:"min(400px,80vw)" }}>
-        <div style={{ height:2, background:"rgba(255,255,255,0.06)", borderRadius:99, overflow:"hidden", marginBottom:16 }}>
-          <div style={{ height:"100%", width:`${pct}%`, background:"linear-gradient(90deg,#4466ff,#88aaff)", borderRadius:99, transition:"width 0.3s ease", boxShadow:"0 0 12px rgba(100,140,255,0.6)" }}/>
+        <div style={{ height:4, background:"rgba(255,255,255,0.15)", borderRadius:99, overflow:"hidden", marginBottom:16 }}>
+          <div style={{ height:"100%", width:`${pct}%`, background:"linear-gradient(90deg,#00f5d4,#00a8ff)", borderRadius:99, transition:"width 0.2s ease" }}/>
         </div>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <div style={{ fontSize:11, color:"rgba(255,255,255,0.3)", letterSpacing:"0.06em", maxWidth:"70%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}</div>
-          <div style={{ fontSize:13, fontWeight:700, color:"#6688ff", fontVariantNumeric:"tabular-nums" }}>{pct}%</div>
+          <div style={{ fontSize:11, color:"rgba(255,255,255,0.7)", letterSpacing:"0.06em", maxWidth:"70%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textShadow:"0 1px 2px #000" }}>{label}</div>
+          <div style={{ fontSize:13, fontWeight:700, color:"#00f5d4", fontVariantNumeric:"tabular-nums", textShadow:"0 1px 2px #000" }}>{pct}%</div>
         </div>
       </div>
+
       <div style={{ position:"relative", zIndex:2, marginTop:48, display:"flex", gap:6 }}>
         {[0,1,2].map(i=>(
-          <div key={i} style={{ width:4, height:4, borderRadius:"50%", background:"#4466ff", opacity:0.4, animation:`dotpulse 1.2s ease-in-out ${i*0.2}s infinite` }}/>
+          <div key={i} style={{ width:5, height:5, borderRadius:"50%", background:"#00f5d4", opacity:0.4, animation:`dotpulse 1.2s ease-in-out ${i*0.2}s infinite` }}/>
         ))}
       </div>
       <style>{`@keyframes dotpulse{0%,100%{opacity:.2;transform:scale(1)}50%{opacity:1;transform:scale(1.5)}}`}</style>
@@ -248,4 +274,4 @@ function Hud({ character, onExit }: { character: CharacterDef; onExit: () => voi
       <style>{`.kbd{display:inline-block;min-width:1.3em;padding:0 .35em;margin-right:.25em;border-radius:.25rem;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);font-family:ui-monospace,monospace;font-size:.7rem}`}</style>
     </>
   );
-}
+              }
