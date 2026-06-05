@@ -18,28 +18,31 @@ export interface MobileUICallbacks {
 // col / row là bội số của STEP (BTN_SIZE + GAP).
 // col tăng → dịch trái. row tăng → dịch lên.
 // ─────────────────────────────────────────────────────────────────────────────
-const BTN_SIZE   = 64;
-const GAP        = 10;
-const SAFE_RIGHT = 20;
-const SAFE_BOT   = 40;
+const BTN_SIZE   = 82;   // +18px → ngón cái chạm dễ hơn hẳn
+const GAP        = 8;    // kéo sát lại cho cụm gọn
+const SAFE_RIGHT = 16;
+const SAFE_BOT   = 36;
 const STEP       = BTN_SIZE + GAP;
 
-//  Hình thoi: mỗi nút cách nhau đúng 1 STEP
-//                  col   row
+//  Hình thoi chuẩn – nhìn như PS/Xbox
+//          [SPECIAL]
+//      [KICK]  [PUNCH]
+//          [JUMP]
+//  [SPRINT]
 const RHOMBUS = {
-  jump:    { col: 1,   row: 0   },   // giữa-dưới  → anchor chính
-  punch:   { col: 1,   row: 1   },   // thẳng trên
-  kick:    { col: 0,   row: 0.5 },   // trái-giữa  (PS: Square)
-  special: { col: 2,   row: 0.5 },   // phải-giữa  (PS: Circle)
-  sprint:  { col: 3.6, row: 0   },   // tách hẳn ra ngoài trái
+  jump:    { col: 1,   row: 0   },
+  punch:   { col: 1,   row: 1   },
+  kick:    { col: 0,   row: 0.5 },
+  special: { col: 2,   row: 0.5 },
+  sprint:  { col: 3.4, row: 0.1 },   // tách sang trái, hơi nhích lên tránh cạnh dưới
 };
 
 const BUTTON_DEFS = [
-  { id: "jump",    img: "jump.png",    glow: "#facc15", size: BTN_SIZE * 1.12 },
+  { id: "jump",    img: "jump.png",    glow: "#facc15", size: BTN_SIZE * 1.14 }, // nút chính to nhất
   { id: "punch",   img: "punch.png",   glow: "#38bdf8", size: BTN_SIZE },
   { id: "kick",    img: "kick.png",    glow: "#f472b6", size: BTN_SIZE },
   { id: "special", img: "special.png", glow: "#c084fc", size: BTN_SIZE },
-  { id: "sprint",  img: "sprint.png",  glow: "#2dd4bf", size: BTN_SIZE * 0.88 },
+  { id: "sprint",  img: "sprint.png",  glow: "#2dd4bf", size: BTN_SIZE * 0.82 }, // sprint nhỏ hơn chút, phụ trợ
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -349,7 +352,7 @@ export class MobileUI {
 
   // ── Joystick ───────────────────────────────────────────────────────────────
   private buildJoystick(ui: HTMLElement): HTMLElement {
-    const JOY_SIZE = 118;
+    const JOY_SIZE = 140;   // tăng từ 118 → 140, dễ điều hướng hơn
     const wrap = document.createElement("div");
     wrap.className = "mui-joy-wrap";
     Object.assign(wrap.style, {
@@ -362,7 +365,7 @@ export class MobileUI {
     base.className = "mui-joy-base";
     const knob = document.createElement("div");
     knob.className = "mui-joy-knob";
-    Object.assign(knob.style, { width: "48px", height: "48px" });
+    Object.assign(knob.style, { width: "58px", height: "58px" });
     wrap.appendChild(base);
     wrap.appendChild(knob);
     ui.appendChild(wrap);
@@ -483,4 +486,4 @@ export class MobileUI {
     this.root.parentElement?.removeChild(this.root);
     document.getElementById("mobileui-styles")?.remove();
   }
-  }
+    }
