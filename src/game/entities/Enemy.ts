@@ -23,11 +23,12 @@ export interface EnemyConfig {
 
 export const GOBLIN_CONFIG: EnemyConfig = {
   modelUrl:       "/model/goblin.fbx",
-  animIdle:       "/animation/animation-goblin/Walking.fbx",
+  // FIX: animIdle dùng file khác walk — nếu chưa có Idle.fbx thì dùng Standing Melee làm idle tạm
+  animIdle:       "/animation/animation-goblin/Rifle Kneel Hit To Back.fbx",
   animWalk:       "/animation/animation-goblin/Walking.fbx",
   animAttack:     "/animation/animation-goblin/Standing Melee Attack Backhand.fbx",
   animDeath:      "/animation/animation-goblin/Zombie Reaction Hit.fbx",
-  scale:          0.03,  // FBX Mixamo = cm, 0.03 ≈ 1.8m khi đứng
+  scale:          0.03,
   maxHp:          150,
   moveSpeed:      2.2,
   chaseRange:     15,
@@ -63,6 +64,9 @@ export class Enemy {
   private _dir  = new THREE.Vector3();
   private _flat = new THREE.Vector3();
 
+  // FIX: dùng chung 1 FBXLoader thay vì tạo mới mỗi lần → giảm lag
+  private fbxLoader = new FBXLoader();
+
   constructor(
     spawnPos: THREE.Vector3,
     config: EnemyConfig,
@@ -86,6 +90,7 @@ export class Enemy {
     this.patrolTarget = spawnPos.clone();
 
     this.root = new THREE.Group();
+    this.root.frustumCulled = false; // FIX: root Group cũng phải tắt culling
     this.root.position.copy(spawnPos);
     this.scene.add(this.root);
 
@@ -138,21 +143,17 @@ export class Enemy {
       model.scale.setScalar(this.cfg.scale);
       model.updateMatrixWorld(true);
 
-      // ── footOffset: đẩy model lên đúng mặt đất ───────────────────────
       const bbox = new THREE.Box3().setFromObject(model);
       const footOffset = isFinite(bbox.min.y) && (bbox.max.y - bbox.min.y) > 0.1
         ? -bbox.min.y : 0;
       model.position.set(0, footOffset, 0);
       console.log(`📐 Goblin footOffset: ${footOffset.toFixed(3)}, height: ${(bbox.max.y - bbox.min.y).toFixed(3)}`);
 
-      // ── Material: chỉ fix frustumCulled, KHÔNG set needsUpdate ───────
-      // needsUpdate trên texture chưa load = 5628 warning + model đen
       model.traverse(n => {
         if (!(n as THREE.Mesh).isMesh) return;
         const mesh = n as THREE.Mesh;
         mesh.castShadow    = true;
-        mesh.frustumCulled = false;  // fix biến mất khi xoay cam
-        // Không động vào texture ở đây — để FBXLoader tự xử lý
+        mesh.frustumCulled = false;
       });
 
       // Xóa placeholder, gắn model thật
@@ -160,6 +161,10 @@ export class Enemy {
         .filter(c => c.name === "__placeholder")
         .forEach(c => this.root.remove(c));
       this.root.add(model);
+
+      // FIX: force update matrix sau khi add vào root
+      this.root.updateMatrixWorld(true);
+      model.updateMatrixWorld(true);
 
       // ── Mixer ─────────────────────────────────────────────────────────
       this.mixer = new THREE.AnimationMixer(model);
@@ -170,14 +175,12 @@ export class Enemy {
         }
       });
 
-      // Load animations
+      // FIX: load tuần tự thay vì song song để tránh FBXLoader conflict
       console.log("🔄 Loading goblin animations...");
-      const [idle, walk, attack, death] = await Promise.all([
-        this.loadClip(this.cfg.animIdle),
-        this.loadClip(this.cfg.animWalk),
-        this.loadClip(this.cfg.animAttack),
-        this.loadClip(this.cfg.animDeath),
-      ]);
+      const idle   = await this.loadClip(this.cfg.animIdle);
+      const walk   = await this.loadClip(this.cfg.animWalk);
+      const attack = await this.loadClip(this.cfg.animAttack);
+      const death  = await this.loadClip(this.cfg.animDeath);
       console.log(`✅ Anims: idle=${!!idle} walk=${!!walk} attack=${!!attack} death=${!!death}`);
 
       if (idle) {
@@ -209,19 +212,20 @@ export class Enemy {
     }
   }
 
+  // FIX: dùng this.fbxLoader thay vì new FBXLoader() mỗi lần
   private loadModel(url: string): Promise<THREE.Group> {
     return new Promise((res, rej) => {
       if (url.endsWith(".glb") || url.endsWith(".gltf")) {
         new GLTFLoader().load(url, g => res(g.scene as THREE.Group), undefined, rej);
       } else {
-        new FBXLoader().load(url, fbx => res(fbx as unknown as THREE.Group), undefined, rej);
+        this.fbxLoader.load(url, fbx => res(fbx as unknown as THREE.Group), undefined, rej);
       }
     });
   }
 
   private loadClip(url: string): Promise<THREE.AnimationClip | null> {
     return new Promise((res) => {
-      new FBXLoader().load(
+      this.fbxLoader.load(
         url,
         fbx => res(fbx.animations[0] ?? null),
         undefined,
@@ -479,5 +483,5 @@ export class EnemyManager {
     this.enemies.forEach(e => e.dispose());
     this.enemies = [];
   }
-  }
-                   
+        }
+      
