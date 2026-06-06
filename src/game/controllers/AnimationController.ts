@@ -2,7 +2,7 @@ import * as THREE from "three";
 import {
   ANIM_KEYS, COMBAT_ANIMS, COMBO_CHAIN,
   type AnimKey, type AnimClipMap,
-} from "../types";
+} from "../types"; // Sửa đường dẫn cho đúng
 
 export interface AnimationControllerCallbacks {
   isMoving: () => boolean;
@@ -18,14 +18,12 @@ export interface SetupResult {
 export class AnimationController {
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Partial<Record<AnimKey, THREE.AnimationAction>> = {};
-  private actionToKey = new Map<THREE.AnimationAction, AnimKey>();
   private currentAction: THREE.AnimationAction | null = null;
   private currentKey: AnimKey = "idle";
   private fallbackAnimKey: AnimKey | null = null;
 
   private isAttacking = false;
   private attackCooldown = 0;
-  private attackLockTimer = 0;
 
   private comboCount = 0;
   private comboTimer = 0;
@@ -102,12 +100,12 @@ export class AnimationController {
         action.clampWhenFinished = true;
       }
       this.actions[key] = action;
-      this.actionToKey.set(action, key);
       if (!this.fallbackAnimKey) this.fallbackAnimKey = key;
     }
 
     this.mixer.addEventListener("finished", (e: any) => {
-      const doneKey = this.actionToKey.get(e.action);
+      const doneKey = (Object.entries(this.actions) as [AnimKey, THREE.AnimationAction][])
+        .find(([, a]) => a === e.action)?.[0];
       if (!doneKey) return;
 
       if (doneKey === "death" && this.actions.gettingUp) {
@@ -119,61 +117,39 @@ export class AnimationController {
         this.isAttacking = false;
         this.attackCooldown = 0.3;
         this.currentAction = null;
-        this.playAnim(this.cb.isMoving() ? "walk" : "idle", 0.15);
+        this.playAnim(this.cb.isMoving() ? "walk" : "idle", 0);
       }
     });
 
     const startKey: AnimKey = this.actions.idle ? "idle"
       : this.actions.walk ? "walk"
       : (this.fallbackAnimKey ?? "idle");
-
-    const startAction = this.actions[startKey];
-    if (startAction) {
-      startAction.enabled = true;
-      startAction.setEffectiveWeight(1);
-      startAction.setEffectiveTimeScale(1);
-      startAction.play();
-      this.currentAction = startAction;
-      this.currentKey = startKey;
-    }
-    this.mixer.update(0);
-    this.mixer.update(0.001);
-    this.mixer.update(0.001);
+    this.playAnim(startKey, 0);
+    this.mixer.update(0.016);
 
     return { modelRoot: model, playerHeight, footOffset };
   }
 
-  playAnim(key: AnimKey, fade = 0.15) {
+  playAnim(key: AnimKey, _fade = 0.2) {
     if (!this.mixer) return;
     let next = this.actions[key];
     if (!next && this.fallbackAnimKey) next = this.actions[this.fallbackAnimKey];
     if (!next) return;
     if (this.currentAction === next && next.isRunning()) return;
 
-    const prev = this.currentAction;
-
-    if (prev && prev !== next && fade > 0) {
-      const needReset = COMBAT_ANIMS.has(key) || key === "jump";
-      if (needReset) next.reset();
-      next.enabled = true;
-      next.setEffectiveWeight(1);
-      next.setEffectiveTimeScale(1);
-      prev.crossFadeTo(next, fade, true);
-      next.play();
-    } else {
-      if (prev && prev !== next) {
-        prev.stop();
-        prev.enabled = false;
-      }
-      next.reset();
-      next.enabled = true;
-      next.setEffectiveWeight(1);
-      next.setEffectiveTimeScale(1);
-      next.play();
+    for (const a of Object.values(this.actions)) {
+      if (a && a !== next) { a.stop(); a.enabled = false; }
     }
 
     this.currentAction = next;
     this.currentKey = key;
+
+    const needReset = COMBAT_ANIMS.has(key) || key === "jump" || !next.isRunning();
+    if (needReset) next.reset();
+    next.enabled = true;
+    next.setEffectiveWeight(1);
+    next.setEffectiveTimeScale(1);
+    next.play();
   }
 
   triggerAttack(key: AnimKey) {
@@ -190,25 +166,15 @@ export class AnimationController {
 
     this.isAttacking = true;
     this.attackCooldown = 0.6;
-    this.attackLockTimer = 0.8;
     this.playAnim(key, 0.1);
 
-    this.comboCount = Math.min(this.comboCount + 1, 999);
+    this.comboCount++;
     this.comboTimer = 1.6;
     this.cb.onComboChanged?.(this.comboCount);
   }
 
   update(dt: number): { isAttacking: boolean } {
     if (this.attackCooldown > 0) this.attackCooldown -= dt;
-
-    if (this.attackLockTimer > 0) {
-      this.attackLockTimer -= dt;
-      if (this.attackLockTimer <= 0) {
-        this.isAttacking = false;
-        this.comboCount = 0;
-        this.cb.onComboChanged?.(0);
-      }
-    }
 
     if (this.comboCount > 0) {
       this.comboTimer -= dt;
@@ -224,10 +190,10 @@ export class AnimationController {
 
   drive(moving: boolean, sprinting: boolean, onGround: boolean) {
     if (this.isAttacking) return;
-    if (!onGround)                this.playAnim("jump", 0.15);
-    else if (moving && sprinting) this.playAnim("run",  0.2);
-    else if (moving)              this.playAnim("walk", 0.2);
-    else                          this.playAnim("idle", 0.25);
+    if (!onGround)            this.playAnim("jump", 0.15);
+    else if (moving && sprinting) this.playAnim("run", 0.25);
+    else if (moving)              this.playAnim("walk", 0.25);
+    else                          this.playAnim("idle", 0.35);
   }
 
   getMixer() { return this.mixer; }
