@@ -1,11 +1,31 @@
 import * as THREE from "three";
 import { type CharacterDef } from "./characters";
-import { type AnimClipMap } from "./types";
-import { AnimationController } from "./AnimationController";
-import { PlayerController, lerpAngle } from "./PlayerController";
-import { HUD } from "./HUD";
-import { MobileUI } from "./MobileUI";
-import { DialogueUI, fadeToWhite } from "./DialogueUI";
+import { type AnimClipMap, type AnimKey, type InputState, ANIM_KEYS } from "./types"; // file types.ts gốc
+import { GameEvents } from "./types/events"; // hoặc "./types" nếu đã export từ index
+
+import {
+  AnimationController,
+  CameraController,
+  CombatController,
+  PlayerController,
+  lerpAngle,
+} from "./controllers";
+
+import {
+  eventBus,
+  ScreenManager,
+  collisionManager,
+} from "./core";
+
+import { HubScene } from "./scenes";
+
+import {
+  HUD,
+  MobileUI,
+  DialogueUI,
+  fadeToWhite,
+} from "./ui";
+
 import { INTRO_NPC_DIALOGUE } from "./dialogues";
 
 import {
@@ -14,12 +34,6 @@ import {
   PLAYER_SPAWN,
   type IntroSceneHandles,
 } from "./IntroScene";
-
-import { HubScene } from "./scenes/HubScene";
-import { eventBus } from "./core/EventBus";
-import { GameEvents } from "./types/events";
-import { ScreenManager } from "./core/ScreenManager";
-import { collisionManager } from "./core/CollisionManager";
 
 export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
 
