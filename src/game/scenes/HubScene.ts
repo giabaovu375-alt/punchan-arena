@@ -12,6 +12,8 @@ import { optimizeHubScene } from "./hub/HubCollisionOptimizer";
 import { setupPortals, type PortalMarker } from "./hub/HubPortal";
 import { createLeafParticles, tickLeafParticles, type LeafParticleSystem } from "./hub/HubParticles";
 
+import { EnemyManager, GOBLIN_CONFIG } from "../entities/Enemy";
+
 async function loadAllModels(loader: GLTFLoader): Promise<Map<string, THREE.Group>> {
   const cache = new Map<string, THREE.Group>();
   const unique = [...new Set(ALL_MODEL_NAMES)];
@@ -35,6 +37,11 @@ export class HubScene extends BaseScene {
   private particleSystem: LeafParticleSystem | null = null;
   private elapsed = 0;
 
+  // Enemy
+  private enemyManager: EnemyManager | null = null;
+  private playerRef: THREE.Object3D | null = null;
+  private cameraRef: THREE.Camera | null = null;
+
   public scene: THREE.Scene;
 
   constructor() {
@@ -42,15 +49,48 @@ export class HubScene extends BaseScene {
     this.scene = new THREE.Scene();
   }
 
+  // ── Phương thức nhận player và camera từ GameEngine ────────────────────
+  public setPlayer(player: THREE.Object3D) {
+    this.playerRef = player;
+  }
+
+  public setCamera(camera: THREE.Camera) {
+    this.cameraRef = camera;
+  }
+
+  public getEnemyRoots(): THREE.Object3D[] {
+    return this.enemyManager?.getRoots() ?? [];
+  }
+
+  // ── Sự kiện Player tấn công ────────────────────────────────────────────
+  private onPlayerAttack = (data: { origin: THREE.Vector3; forward: THREE.Vector3; range: number; damage: number }) => {
+    this.enemyManager?.hitInRange(data.origin, data.range, data.damage);
+  };
+
   protected async onLoad(): Promise<void> {
     console.log("🌅 HubScene loading...");
     try {
       this.modelCache = await loadAllModels(this.loader);
       setupLighting(this.scene);
       setupGround(this.scene);
-      optimizeHubScene(this.scene, this.modelCache); // Tối ưu + Collider
+      optimizeHubScene(this.scene, this.modelCache);
       this.portalMarkers = setupPortals(this.scene);
       this.particleSystem = createLeafParticles(this.scene);
+
+      // ── Spawn Goblin ──────────────────────────────────────────────────
+      this.enemyManager = new EnemyManager(this.scene, document.body); // tạm dùng document.body cho HUD
+      this.enemyManager.spawn(
+        [
+          new THREE.Vector3(5, 0, 5),
+          new THREE.Vector3(-5, 0, -5),
+          new THREE.Vector3(0, 0, 10),
+        ],
+        GOBLIN_CONFIG
+      );
+
+      // Lắng nghe sự kiện player tấn công
+      eventBus.on(GameEvents.PLAYER_ATTACK, this.onPlayerAttack);
+
       console.log("✅ HubScene loaded!");
       eventBus.emit(GameEvents.SCENE_LOADED, { sceneName: "HubScene" });
     } catch (error) {
@@ -61,7 +101,10 @@ export class HubScene extends BaseScene {
 
   protected async onUnload(): Promise<void> {
     console.log("🌅 HubScene unloading...");
-    collisionManager.clear(); // XÓA TOÀN BỘ COLLIDER
+    eventBus.off(GameEvents.PLAYER_ATTACK, this.onPlayerAttack);
+    this.enemyManager?.dispose();
+    this.enemyManager = null;
+    collisionManager.clear();
     this.modelCache.clear();
     this.portalMarkers = [];
     this.particleSystem = null;
@@ -73,6 +116,14 @@ export class HubScene extends BaseScene {
       if (marker.mesh.children[0]) marker.mesh.children[0].rotation.z += deltaTime * 0.3;
     }
     if (this.particleSystem) tickLeafParticles(this.particleSystem, deltaTime);
+
+    // ── Cập nhật Enemy & gây damage cho Player ──────────────────────────
+    if (this.enemyManager && this.playerRef && this.cameraRef) {
+      const totalDmg = this.enemyManager.update(deltaTime, this.playerRef.position, this.cameraRef);
+      if (totalDmg > 0) {
+        eventBus.emit(GameEvents.PLAYER_DAMAGE, { amount: totalDmg });
+      }
+    }
   }
 
   public update(deltaTime: number): void {
@@ -88,4 +139,4 @@ export class HubScene extends BaseScene {
     }
     return null;
   }
-}
+        }
