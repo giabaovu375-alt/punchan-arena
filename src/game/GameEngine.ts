@@ -111,7 +111,7 @@ export class GameEngine {
       antialias: !this.isMobile, // tắt antialias mobile → tiết kiệm GPU
       powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.isMobile ? 1 : 1.5));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.isMobile ? 2 : 2));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.shadowMap.enabled = !this.isMobile; // shadow chỉ desktop
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
