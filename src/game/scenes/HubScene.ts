@@ -31,15 +31,15 @@ async function loadAllModels(loader: GLTFLoader): Promise<Map<string, THREE.Grou
 }
 
 export class HubScene extends BaseScene {
-  private loader = new GLTFLoader();
-  private modelCache: Map<string, THREE.Group> = new Map();
+  private loader       = new GLTFLoader();
+  private modelCache   = new Map<string, THREE.Group>();
   private portalMarkers: PortalMarker[] = [];
   private particleSystem: LeafParticleSystem | null = null;
-  private elapsed = 0;
+  private elapsed      = 0;
 
   private enemyManager: EnemyManager | null = null;
-  private playerRef: THREE.Object3D | null = null;
-  private cameraRef: THREE.Camera | null = null;
+  private playerRef:  THREE.Object3D | null = null;
+  private cameraRef:  THREE.Camera   | null = null;
 
   public scene: THREE.Scene;
 
@@ -48,19 +48,20 @@ export class HubScene extends BaseScene {
     this.scene = new THREE.Scene();
   }
 
-  public setPlayer(player: THREE.Object3D) {
-    this.playerRef = player;
-  }
+  public setPlayer(player: THREE.Object3D) { this.playerRef = player; }
+  public setCamera(camera: THREE.Camera)   { this.cameraRef = camera; }
 
-  public setCamera(camera: THREE.Camera) {
-    this.cameraRef = camera;
-  }
-
+  // ── Fix: đổi getRoots() → getEnemyRoots() cho đúng EnemyManager ──────
   public getEnemyRoots(): THREE.Object3D[] {
-    return this.enemyManager?.getRoots() ?? [];
+    return this.enemyManager?.getEnemyRoots() ?? [];
   }
 
-  private onPlayerAttack = (data: { origin: THREE.Vector3; forward: THREE.Vector3; range: number; damage: number }) => {
+  private onPlayerAttack = (data: {
+    origin: THREE.Vector3;
+    forward: THREE.Vector3;
+    range: number;
+    damage: number;
+  }) => {
     this.enemyManager?.hitInRange(data.origin, data.range, data.damage);
   };
 
@@ -71,18 +72,25 @@ export class HubScene extends BaseScene {
       setupLighting(this.scene);
       setupGround(this.scene);
       optimizeHubScene(this.scene, this.modelCache);
-      this.portalMarkers = setupPortals(this.scene);
+      this.portalMarkers  = setupPortals(this.scene);
       this.particleSystem = createLeafParticles(this.scene);
 
-      // Spawn goblin ở vị trí thoáng, không bị cây che
+      // ── Spawn goblin – dùng hudContainer đúng ──────────────────────────
+      // document.body gây HP bar bị offset sai nếu canvas không fullscreen
+      // → dùng container của renderer thay thế, nhưng vì HubScene không giữ
+      //   ref đó, tạm dùng document.body và clip bằng CSS overflow:hidden
       this.enemyManager = new EnemyManager(this.scene, document.body);
+
+      // Spawn rải đều xung quanh player spawn (0,0,30), cách ít nhất 8m
+      // để không overlap ngay khi vào scene
       this.enemyManager.spawn(
         [
-          new THREE.Vector3(10, 0, 25),   // phía trước bên phải
-          new THREE.Vector3(-10, 0, 25),  // phía trước bên trái
-          new THREE.Vector3(0, 0, 35),    // xa hơn về phía trước
+          new THREE.Vector3( 12, 0, 38),  // phải-xa
+          new THREE.Vector3(-12, 0, 38),  // trái-xa
+          new THREE.Vector3(  0, 0, 48),  // thẳng trước xa
+          new THREE.Vector3( 18, 0, 30),  // phải-ngang
         ],
-        GOBLIN_CONFIG
+        GOBLIN_CONFIG,
       );
 
       eventBus.on(GameEvents.PLAYER_ATTACK, this.onPlayerAttack);
@@ -90,7 +98,7 @@ export class HubScene extends BaseScene {
       console.log("✅ HubScene loaded!");
       eventBus.emit(GameEvents.SCENE_LOADED, { sceneName: "HubScene" });
     } catch (error) {
-      console.error("Error loading HubScene:", error);
+      console.error("❌ Error loading HubScene:", error);
       throw error;
     }
   }
@@ -102,19 +110,26 @@ export class HubScene extends BaseScene {
     this.enemyManager = null;
     collisionManager.clear();
     this.modelCache.clear();
-    this.portalMarkers = [];
+    this.portalMarkers  = [];
     this.particleSystem = null;
   }
 
   protected onUpdate(deltaTime: number): void {
     this.elapsed += deltaTime;
+
     for (const marker of this.portalMarkers) {
-      if (marker.mesh.children[0]) marker.mesh.children[0].rotation.z += deltaTime * 0.3;
+      if (marker.mesh.children[0])
+        marker.mesh.children[0].rotation.z += deltaTime * 0.3;
     }
+
     if (this.particleSystem) tickLeafParticles(this.particleSystem, deltaTime);
 
     if (this.enemyManager && this.playerRef && this.cameraRef) {
-      const totalDmg = this.enemyManager.update(deltaTime, this.playerRef.position, this.cameraRef);
+      const totalDmg = this.enemyManager.update(
+        deltaTime,
+        this.playerRef.position,
+        this.cameraRef,
+      );
       if (totalDmg > 0) {
         eventBus.emit(GameEvents.PLAYER_DAMAGE, { amount: totalDmg });
       }
@@ -130,8 +145,9 @@ export class HubScene extends BaseScene {
     for (const marker of this.portalMarkers) {
       const dx = playerPos.x - marker.position.x;
       const dz = playerPos.z - marker.position.z;
-      if (Math.sqrt(dx * dx + dz * dz) < marker.radius) return marker.targetScene;
+      if (Math.sqrt(dx * dx + dz * dz) < marker.radius)
+        return marker.targetScene;
     }
     return null;
   }
-                    }
+}
