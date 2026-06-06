@@ -4,7 +4,7 @@ import { BaseScene } from "./BaseScene";
 import { eventBus } from "../core/EventBus";
 import { GameEvents } from "../types/events";
 import { collisionManager } from "../core/CollisionManager";
- 
+
 import { ALL_MODEL_NAMES, MODEL_BASE } from "./hub/HubConfig";
 import { setupLighting } from "./hub/HubLighting";
 import { setupGround } from "./hub/HubGround";
@@ -37,7 +37,6 @@ export class HubScene extends BaseScene {
   private particleSystem: LeafParticleSystem | null = null;
   private elapsed = 0;
 
-  // Enemy
   private enemyManager: EnemyManager | null = null;
   private playerRef: THREE.Object3D | null = null;
   private cameraRef: THREE.Camera | null = null;
@@ -49,7 +48,6 @@ export class HubScene extends BaseScene {
     this.scene = new THREE.Scene();
   }
 
-  // ── Phương thức nhận player và camera từ GameEngine ────────────────────
   public setPlayer(player: THREE.Object3D) {
     this.playerRef = player;
   }
@@ -62,7 +60,6 @@ export class HubScene extends BaseScene {
     return this.enemyManager?.getRoots() ?? [];
   }
 
-  // ── Sự kiện Player tấn công ────────────────────────────────────────────
   private onPlayerAttack = (data: { origin: THREE.Vector3; forward: THREE.Vector3; range: number; damage: number }) => {
     this.enemyManager?.hitInRange(data.origin, data.range, data.damage);
   };
@@ -77,18 +74,17 @@ export class HubScene extends BaseScene {
       this.portalMarkers = setupPortals(this.scene);
       this.particleSystem = createLeafParticles(this.scene);
 
-      // ── Spawn Goblin ──────────────────────────────────────────────────
-      this.enemyManager = new EnemyManager(this.scene, document.body); // tạm dùng document.body cho HUD
+      // Spawn goblin ở vị trí thoáng, không bị cây che
+      this.enemyManager = new EnemyManager(this.scene, document.body);
       this.enemyManager.spawn(
         [
-          new THREE.Vector3(5, 0, 5),
-          new THREE.Vector3(-5, 0, -5),
-          new THREE.Vector3(0, 0, 10),
+          new THREE.Vector3(10, 0, 25),   // phía trước bên phải
+          new THREE.Vector3(-10, 0, 25),  // phía trước bên trái
+          new THREE.Vector3(0, 0, 35),    // xa hơn về phía trước
         ],
         GOBLIN_CONFIG
       );
 
-      // Lắng nghe sự kiện player tấn công
       eventBus.on(GameEvents.PLAYER_ATTACK, this.onPlayerAttack);
 
       console.log("✅ HubScene loaded!");
@@ -117,7 +113,6 @@ export class HubScene extends BaseScene {
     }
     if (this.particleSystem) tickLeafParticles(this.particleSystem, deltaTime);
 
-    // ── Cập nhật Enemy & gây damage cho Player ──────────────────────────
     if (this.enemyManager && this.playerRef && this.cameraRef) {
       const totalDmg = this.enemyManager.update(deltaTime, this.playerRef.position, this.cameraRef);
       if (totalDmg > 0) {
@@ -139,4 +134,4 @@ export class HubScene extends BaseScene {
     }
     return null;
   }
-        }
+                    }
