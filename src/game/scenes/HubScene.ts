@@ -41,6 +41,9 @@ export class HubScene extends BaseScene {
   private playerRef:  THREE.Object3D | null = null;
   private cameraRef:  THREE.Camera   | null = null;
 
+  // FIX: flag để biết scene đã load xong chưa
+  private isLoaded = false;
+
   public scene: THREE.Scene;
 
   constructor() {
@@ -48,10 +51,17 @@ export class HubScene extends BaseScene {
     this.scene = new THREE.Scene();
   }
 
-  public setPlayer(player: THREE.Object3D) { this.playerRef = player; }
-  public setCamera(camera: THREE.Camera)   { this.cameraRef = camera; }
+  // FIX: setPlayer/setCamera có thể gọi trước hoặc sau onLoad đều OK
+  public setPlayer(player: THREE.Object3D) {
+    this.playerRef = player;
+    console.log("✅ HubScene: playerRef set");
+  }
 
-  // ── Fix: đổi getRoots() → getEnemyRoots() cho đúng EnemyManager ──────
+  public setCamera(camera: THREE.Camera) {
+    this.cameraRef = camera;
+    console.log("✅ HubScene: cameraRef set");
+  }
+
   public getEnemyRoots(): THREE.Object3D[] {
     return this.enemyManager?.getEnemyRoots() ?? [];
   }
@@ -75,26 +85,21 @@ export class HubScene extends BaseScene {
       this.portalMarkers  = setupPortals(this.scene);
       this.particleSystem = createLeafParticles(this.scene);
 
-      // ── Spawn goblin – dùng hudContainer đúng ──────────────────────────
-      // document.body gây HP bar bị offset sai nếu canvas không fullscreen
-      // → dùng container của renderer thay thế, nhưng vì HubScene không giữ
-      //   ref đó, tạm dùng document.body và clip bằng CSS overflow:hidden
       this.enemyManager = new EnemyManager(this.scene, document.body);
 
-      // Spawn rải đều xung quanh player spawn (0,0,30), cách ít nhất 8m
-      // để không overlap ngay khi vào scene
       this.enemyManager.spawn(
         [
-          new THREE.Vector3( 12, 0, 38),  // phải-xa
-          new THREE.Vector3(-12, 0, 38),  // trái-xa
-          new THREE.Vector3(  0, 0, 48),  // thẳng trước xa
-          new THREE.Vector3( 18, 0, 30),  // phải-ngang
+          new THREE.Vector3( 12, 0, 38),
+          new THREE.Vector3(-12, 0, 38),
+          new THREE.Vector3(  0, 0, 48),
+          new THREE.Vector3( 18, 0, 30),
         ],
         GOBLIN_CONFIG,
       );
 
       eventBus.on(GameEvents.PLAYER_ATTACK, this.onPlayerAttack);
 
+      this.isLoaded = true; // FIX: đánh dấu load xong
       console.log("✅ HubScene loaded!");
       eventBus.emit(GameEvents.SCENE_LOADED, { sceneName: "HubScene" });
     } catch (error) {
@@ -105,6 +110,7 @@ export class HubScene extends BaseScene {
 
   protected async onUnload(): Promise<void> {
     console.log("🌅 HubScene unloading...");
+    this.isLoaded = false;
     eventBus.off(GameEvents.PLAYER_ATTACK, this.onPlayerAttack);
     this.enemyManager?.dispose();
     this.enemyManager = null;
@@ -115,6 +121,9 @@ export class HubScene extends BaseScene {
   }
 
   protected onUpdate(deltaTime: number): void {
+    // FIX: guard đầy đủ — không update nếu chưa load xong hoặc thiếu ref
+    if (!this.isLoaded) return;
+
     this.elapsed += deltaTime;
 
     for (const marker of this.portalMarkers) {
@@ -133,6 +142,9 @@ export class HubScene extends BaseScene {
       if (totalDmg > 0) {
         eventBus.emit(GameEvents.PLAYER_DAMAGE, { amount: totalDmg });
       }
+    } else if (!this.playerRef || !this.cameraRef) {
+      // FIX: cảnh báo nếu quên gọi setPlayer/setCamera
+      console.warn("⚠️ HubScene: thiếu playerRef hoặc cameraRef — gọi setPlayer() và setCamera() trước!");
     }
   }
 
