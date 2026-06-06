@@ -4,7 +4,7 @@ import { BaseScene } from "./BaseScene";
 import { eventBus } from "../core/EventBus";
 import { GameEvents } from "../types/events";
 import { collisionManager } from "../core/CollisionManager";
-
+ 
 import { ALL_MODEL_NAMES, MODEL_BASE } from "./hub/HubConfig";
 import { setupLighting } from "./hub/HubLighting";
 import { setupGround } from "./hub/HubGround";
