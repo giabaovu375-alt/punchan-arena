@@ -27,7 +27,7 @@ export const GOBLIN_CONFIG: EnemyConfig = {
   animWalk:       "/animation/animation-goblin/Walking.fbx",
   animAttack:     "/animation/animation-goblin/Standing Melee Attack Backhand.fbx",
   animDeath:      "/animation/animation-goblin/Zombie Reaction Hit.fbx",
-  scale:          4.0,
+  scale:          0.03,  // FBX Mixamo = cm, 0.03 ≈ 1.8m khi đứng
   maxHp:          150,
   moveSpeed:      2.2,
   chaseRange:     15,
@@ -70,7 +70,7 @@ export class Enemy {
     private hudContainer: HTMLElement,
   ) {
     this.cfg = {
-      scale:          config.scale          ?? 1,
+      scale:          config.scale          ?? 0.03,
       maxHp:          config.maxHp          ?? 100,
       moveSpeed:      config.moveSpeed       ?? 2.5,
       chaseRange:     config.chaseRange      ?? 12,
@@ -100,10 +100,10 @@ export class Enemy {
   private buildPlaceholder() {
     const mat  = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.7 });
     const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.0, 4, 8), mat);
-    body.position.y   = 1.0;
-    body.castShadow   = true;
-    body.frustumCulled = false;   // ← fix biến mất
-    body.name         = "__placeholder";
+    body.position.y    = 1.0;
+    body.castShadow    = true;
+    body.frustumCulled = false;
+    body.name          = "__placeholder";
     this.root.add(body);
 
     const head = new THREE.Mesh(
@@ -112,7 +112,7 @@ export class Enemy {
     );
     head.position.y    = 1.9;
     head.castShadow    = true;
-    head.frustumCulled = false;   // ← fix biến mất
+    head.frustumCulled = false;
     head.name          = "__placeholder";
     this.root.add(head);
 
@@ -131,49 +131,28 @@ export class Enemy {
   // ── Load model + animations ────────────────────────────────────────────
   private async loadAssets() {
     try {
+      console.log("🔄 Loading goblin model...");
       const model = await this.loadModel(this.cfg.modelUrl);
+      console.log("✅ Goblin model loaded");
+
       model.scale.setScalar(this.cfg.scale);
-
-      // ── Tính footOffset để goblin đứng đúng mặt đất ──────────────────
-      const tempScene = new THREE.Scene();
-      model.position.set(0, 0, 0);
       model.updateMatrixWorld(true);
-      tempScene.add(model);
-      const bbox = new THREE.Box3().setFromObject(model);
-      const footOffset = isFinite(bbox.min.y) && (bbox.max.y - bbox.min.y) > 0.1 ? -bbox.min.y : 0;
-      tempScene.remove(model);
-      model.position.set(0, footOffset, 0);
 
-      // ── Fix frustumCulled + nâng chất lượng material ─────────────────
+      // ── footOffset: đẩy model lên đúng mặt đất ───────────────────────
+      const bbox = new THREE.Box3().setFromObject(model);
+      const footOffset = isFinite(bbox.min.y) && (bbox.max.y - bbox.min.y) > 0.1
+        ? -bbox.min.y : 0;
+      model.position.set(0, footOffset, 0);
+      console.log(`📐 Goblin footOffset: ${footOffset.toFixed(3)}, height: ${(bbox.max.y - bbox.min.y).toFixed(3)}`);
+
+      // ── Material: chỉ fix frustumCulled, KHÔNG set needsUpdate ───────
+      // needsUpdate trên texture chưa load = 5628 warning + model đen
       model.traverse(n => {
         if (!(n as THREE.Mesh).isMesh) return;
         const mesh = n as THREE.Mesh;
-
         mesh.castShadow    = true;
-        mesh.frustumCulled = false;   // ← quan trọng nhất, fix biến mất
-
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        mats.forEach((mat: any) => {
-          // Texture sRGB + anisotropy → màu đúng, nét hơn
-          if (mat.map) {
-            mat.map.colorSpace  = THREE.SRGBColorSpace;
-            mat.map.anisotropy  = 8;
-            mat.map.needsUpdate = true;
-          }
-          if (mat.normalMap) {
-            mat.normalMap.anisotropy = 8;
-          }
-
-          // Vật liệu trông thật hơn
-          mat.roughness         = Math.min(mat.roughness  ?? 0.8, 0.85);
-          mat.metalness         = Math.min(mat.metalness  ?? 0.0, 0.2);
-          mat.envMapIntensity   = 1.0;
-
-          // Skinned mesh không cần DoubleSide
-          if (mat.side === THREE.DoubleSide) mat.side = THREE.FrontSide;
-
-          mat.needsUpdate = true;
-        });
+        mesh.frustumCulled = false;  // fix biến mất khi xoay cam
+        // Không động vào texture ở đây — để FBXLoader tự xử lý
       });
 
       // Xóa placeholder, gắn model thật
@@ -191,16 +170,19 @@ export class Enemy {
         }
       });
 
+      // Load animations
+      console.log("🔄 Loading goblin animations...");
       const [idle, walk, attack, death] = await Promise.all([
         this.loadClip(this.cfg.animIdle),
         this.loadClip(this.cfg.animWalk),
         this.loadClip(this.cfg.animAttack),
         this.loadClip(this.cfg.animDeath),
       ]);
+      console.log(`✅ Anims: idle=${!!idle} walk=${!!walk} attack=${!!attack} death=${!!death}`);
 
       if (idle) {
         const a = this.mixer.clipAction(idle);
-        a.paused = true;
+        a.paused          = false;
         this.actions.idle = a;
       }
       if (walk) {
@@ -220,9 +202,10 @@ export class Enemy {
       }
 
       this.playAnim("idle");
+      console.log("✅ Goblin ready!");
 
     } catch (err) {
-      console.warn("Enemy asset load error:", err);
+      console.error("❌ Enemy asset load error:", err);
     }
   }
 
@@ -238,7 +221,12 @@ export class Enemy {
 
   private loadClip(url: string): Promise<THREE.AnimationClip | null> {
     return new Promise((res) => {
-      new FBXLoader().load(url, fbx => res(fbx.animations[0] ?? null), undefined, () => res(null));
+      new FBXLoader().load(
+        url,
+        fbx => res(fbx.animations[0] ?? null),
+        undefined,
+        (err) => { console.warn(`⚠️ Clip load failed: ${url}`, err); res(null); },
+      );
     });
   }
 
@@ -250,7 +238,7 @@ export class Enemy {
     this.currentAction = next;
   }
 
-  // ── HP bar DOM ─────────────────────────────────────────────────────────
+  // ── HP bar ─────────────────────────────────────────────────────────────
   private buildHpBar() {
     const wrap = document.createElement("div");
     wrap.style.cssText = `
@@ -267,7 +255,7 @@ export class Enemy {
     const fill = document.createElement("div");
     fill.style.cssText = `
       height:100%; width:100%; border-radius:99px;
-      background:linear-gradient(90deg,#ef4444,#f97316);
+      background:linear-gradient(90deg,#22c55e,#86efac);
       transition:width 0.15s ease;
     `;
     track.appendChild(fill);
@@ -281,8 +269,8 @@ export class Enemy {
     wrap.appendChild(track);
     wrap.appendChild(lbl);
     this.hudContainer.appendChild(wrap);
-    this.hpBarEl  = wrap;
-    this.hpFillEl = fill;
+    this.hpBarEl   = wrap;
+    this.hpFillEl  = fill;
     this.hpLabelEl = lbl;
   }
 
@@ -328,7 +316,6 @@ export class Enemy {
     this.hp = Math.max(0, this.hp - dmg);
     this.refreshHpBar();
 
-    // Flash đỏ
     this.root.traverse(n => {
       const m = n as THREE.Mesh;
       if (!m.isMesh) return;
@@ -366,7 +353,6 @@ export class Enemy {
     let dmg = 0;
 
     switch (this.state) {
-
       case "patrol": {
         if (dist < this.cfg.chaseRange) {
           this.state = "chase";
@@ -380,7 +366,6 @@ export class Enemy {
           if (this.patrolWaitTimer <= 0) {
             this.pickPatrolTarget();
             this.patrolWaitTimer = 1 + Math.random() * 1.5;
-            this.playAnim("walk");
           }
         } else {
           this.playAnim("walk");
@@ -388,7 +373,6 @@ export class Enemy {
         }
         break;
       }
-
       case "chase": {
         if (dist > this.cfg.chaseRange * 1.3) {
           this.state = "patrol";
@@ -404,11 +388,9 @@ export class Enemy {
         this.moveToward(playerPos, dt, this.cfg.moveSpeed);
         break;
       }
-
       case "attack": {
         this.attackTimer -= dt;
         this.faceTarget(playerPos);
-
         if (dist > this.cfg.attackRange * 1.2) {
           this.state = "chase";
           this.playAnim("walk");
@@ -442,7 +424,6 @@ export class Enemy {
     this.root.rotation.y = Math.atan2(this._flat.x, this._flat.z);
   }
 
-  // ── Cleanup ────────────────────────────────────────────────────────────
   dispose() {
     this.scene.remove(this.root);
     this.mixer?.stopAllAction();
@@ -478,7 +459,6 @@ export class EnemyManager {
   update(dt: number, playerPos: THREE.Vector3, camera: THREE.Camera): number {
     let total = 0;
     for (const e of this.enemies) total += e.update(dt, playerPos, camera);
-    // Dọn quái đã dispose (root bị remove khỏi scene)
     this.enemies = this.enemies.filter(e => e.root.parent !== null);
     return total;
   }
@@ -491,15 +471,13 @@ export class EnemyManager {
     }
   }
 
-  /** Dùng cho lock-on system trong CombatController */
   getEnemyRoots(): THREE.Object3D[] {
-    return this.enemies
-      .filter(e => !e.isDead())
-      .map(e => e.root);
+    return this.enemies.filter(e => !e.isDead()).map(e => e.root);
   }
 
   dispose() {
     this.enemies.forEach(e => e.dispose());
     this.enemies = [];
   }
-}
+  }
+                   
