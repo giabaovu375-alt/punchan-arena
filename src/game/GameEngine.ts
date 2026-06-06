@@ -108,12 +108,12 @@ export class GameEngine {
 
     // ── Renderer – tối ưu theo thiết bị ───────────────────────────────────
     this.renderer = new THREE.WebGLRenderer({
-      antialias: !this.isMobile, // tắt antialias mobile → tiết kiệm GPU
+      antialias: !this.isMobile,
       powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.isMobile ? 2 : 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
-    this.renderer.shadowMap.enabled = !this.isMobile; // shadow chỉ desktop
+    this.renderer.shadowMap.enabled = !this.isMobile;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
@@ -219,7 +219,6 @@ export class GameEngine {
     `;
     this.container.appendChild(el);
     this.loadingOverlay = el;
-    // fade in sau 1 frame
     requestAnimationFrame(() => { if (el.isConnected) el.style.opacity = "1"; });
   }
 
@@ -262,9 +261,7 @@ export class GameEngine {
   }
 
   private async switchToHub() {
-    // Hiện overlay thay vì màn trắng
     this.showLoadingOverlay("Đang tải map...");
-    // Nhường 1 frame để overlay render trước khi block main thread
     await new Promise<void>((r) => setTimeout(r, 50));
 
     this.clearThreeScene(this.scene);
@@ -286,6 +283,10 @@ export class GameEngine {
       this.hideLoadingOverlay();
       return;
     }
+
+    // FIX: setPlayer và setCamera TRƯỚC khi update chạy
+    hub.setPlayer(this.player);
+    hub.setCamera(this.camera);
 
     hub.scene.add(this.player);
     this.hubScene = hub;
@@ -355,7 +356,6 @@ export class GameEngine {
     this.lastMouse = { x: e.clientX, y: e.clientY };
   };
 
-  // Scroll chuột / pinch → zoom in-out nhân vật
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
     this.targetDistance = Math.max(
@@ -392,7 +392,7 @@ export class GameEngine {
       const dx   = e.touches[0].clientX - e.touches[1].clientX;
       const dy   = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.hypot(dx, dy);
-      const scale = this.pinchStartDist / dist; // > 1 = thu nhỏ, < 1 = phóng to
+      const scale = this.pinchStartDist / dist;
       this.targetDistance = Math.max(
         this.CAM_DIST_MIN,
         Math.min(this.CAM_DIST_MAX, this.pinchStartCamDist * scale),
@@ -404,7 +404,6 @@ export class GameEngine {
   // GAME LOOP
   // ═══════════════════════════════════════════════════════════════════════════
   private start() {
-    // Bind pinch zoom cho mobile
     if (this.isMobile) {
       this.renderer.domElement.addEventListener("touchstart", this.onTouchStart, { passive: true });
       this.renderer.domElement.addEventListener("touchmove",  this.onTouchMove,  { passive: true });
@@ -469,7 +468,6 @@ export class GameEngine {
           INTRO_NPC_DIALOGUE.npcName,
           INTRO_NPC_DIALOGUE.lines,
           () => {
-            // Không dùng fadeToWhite nữa – overlay đã lo
             this.switchToHub().catch(err => console.error(err));
           },
         );
@@ -543,4 +541,5 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-        }
+  }
+      
