@@ -2,7 +2,7 @@ import * as THREE from "three";
 import {
   ANIM_KEYS, COMBAT_ANIMS, COMBO_CHAIN,
   type AnimKey, type AnimClipMap,
-} from "../types";  // sửa đường dẫn cho đúng vị trí mới
+} from "../types";
 
 export interface AnimationControllerCallbacks {
   isMoving: () => boolean;
@@ -18,14 +18,14 @@ export interface SetupResult {
 export class AnimationController {
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Partial<Record<AnimKey, THREE.AnimationAction>> = {};
-  private actionToKey = new Map<THREE.AnimationAction, AnimKey>(); // Reverse lookup
+  private actionToKey = new Map<THREE.AnimationAction, AnimKey>();
   private currentAction: THREE.AnimationAction | null = null;
   private currentKey: AnimKey = "idle";
   private fallbackAnimKey: AnimKey | null = null;
 
   private isAttacking = false;
   private attackCooldown = 0;
-  private attackLockTimer = 0; // Safety timeout cho isAttacking
+  private attackLockTimer = 0;
 
   private comboCount = 0;
   private comboTimer = 0;
@@ -102,11 +102,10 @@ export class AnimationController {
         action.clampWhenFinished = true;
       }
       this.actions[key] = action;
-      this.actionToKey.set(action, key); // Lưu reverse map
+      this.actionToKey.set(action, key);
       if (!this.fallbackAnimKey) this.fallbackAnimKey = key;
     }
 
-    // Xử lý sự kiện kết thúc animation
     this.mixer.addEventListener("finished", (e: any) => {
       const doneKey = this.actionToKey.get(e.action);
       if (!doneKey) return;
@@ -137,7 +136,6 @@ export class AnimationController {
       this.currentAction = startAction;
       this.currentKey = startKey;
     }
-    // Warm up mixer
     this.mixer.update(0);
     this.mixer.update(0.001);
     this.mixer.update(0.001);
@@ -163,7 +161,6 @@ export class AnimationController {
       prev.crossFadeTo(next, fade, true);
       next.play();
     } else {
-      // Instant switch (fade = 0) – chỉ stop action hiện tại, không stop tất cả
       if (prev && prev !== next) {
         prev.stop();
         prev.enabled = false;
@@ -193,7 +190,7 @@ export class AnimationController {
 
     this.isAttacking = true;
     this.attackCooldown = 0.6;
-    this.attackLockTimer = 0.8; // Safety timeout > animation dài nhất
+    this.attackLockTimer = 0.8;
     this.playAnim(key, 0.1);
 
     this.comboCount = Math.min(this.comboCount + 1, 999);
@@ -204,7 +201,6 @@ export class AnimationController {
   update(dt: number): { isAttacking: boolean } {
     if (this.attackCooldown > 0) this.attackCooldown -= dt;
 
-    // Safety timeout – nếu attack animation không tự reset
     if (this.attackLockTimer > 0) {
       this.attackLockTimer -= dt;
       if (this.attackLockTimer <= 0) {
