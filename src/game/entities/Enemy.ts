@@ -134,6 +134,16 @@ export class Enemy {
       const model = await this.loadModel(this.cfg.modelUrl);
       model.scale.setScalar(this.cfg.scale);
 
+      // ── Tính footOffset để goblin đứng đúng mặt đất ──────────────────
+      const tempScene = new THREE.Scene();
+      model.position.set(0, 0, 0);
+      model.updateMatrixWorld(true);
+      tempScene.add(model);
+      const bbox = new THREE.Box3().setFromObject(model);
+      const footOffset = isFinite(bbox.min.y) && (bbox.max.y - bbox.min.y) > 0.1 ? -bbox.min.y : 0;
+      tempScene.remove(model);
+      model.position.set(0, footOffset, 0);
+
       // ── Fix frustumCulled + nâng chất lượng material ─────────────────
       model.traverse(n => {
         if (!(n as THREE.Mesh).isMesh) return;
@@ -492,5 +502,4 @@ export class EnemyManager {
     this.enemies.forEach(e => e.dispose());
     this.enemies = [];
   }
-  }
-      
+}
