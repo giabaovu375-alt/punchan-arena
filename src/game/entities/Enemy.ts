@@ -21,21 +21,21 @@ export interface EnemyConfig {
   patrolRadius?: number;
 }
 
-// ─── CONFIG MẶC ĐỊNH CHO GOBLIN ──────────────────────────────────────────────
+// ─── CONFIG MẶC ĐỊNH CHO GOBLIN (đã tăng scale lên 4.0) ─────────────────────
 export const GOBLIN_CONFIG: EnemyConfig = {
   modelUrl:    "/model/goblin.fbx",
-  animIdle:    "/animation/animation-goblin/Walking.fbx",      // không có idle riêng
+  animIdle:    "/animation/animation-goblin/Walking.fbx",
   animWalk:    "/animation/animation-goblin/Walking.fbx",
   animAttack:  "/animation/animation-goblin/Standing Melee Attack Backhand.fbx",
   animDeath:   "/animation/animation-goblin/Zombie Reaction Hit.fbx",
-  scale:       1.5,
-  maxHp:       80,
+  scale:       4.0,   // 👈 Tăng từ 1.5 lên 4.0 để dễ thấy
+  maxHp:       150,
   moveSpeed:   2.2,
   chaseRange:  15,
   attackRange: 2.5,
-  attackDamage:8,
-  attackCooldown:1.2,
-  patrolRadius:6,
+  attackDamage: 12,
+  attackCooldown: 1.2,
+  patrolRadius: 6,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ export class Enemy {
   private patrolWaitTimer = 0;
 
   private attackTimer = 0;
-  private isAttacking = false;                            // ✅ Sửa 2
+  private isAttacking = false;
 
   private hpBarEl: HTMLElement | null = null;
   private hpFillEl: HTMLElement | null = null;
@@ -94,10 +94,10 @@ export class Enemy {
     this.buildHpBar();
     this.loadAssets();
     this.pickPatrolTarget();
-    this.patrolWaitTimer = 1 + Math.random() * 1.5;      // ✅ Sửa 1
+    this.patrolWaitTimer = 1 + Math.random() * 1.5;
   }
 
-  // ── Placeholder capsule ────────────────────────────────────────────────
+  // ── Placeholder capsule (hiện ngay lập tức) ────────────────────────────
   private buildPlaceholder() {
     const mat = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.7 });
     const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.0, 4, 8), mat);
@@ -135,7 +135,6 @@ export class Enemy {
 
       this.mixer = new THREE.AnimationMixer(model);
 
-      // ✅ Sửa 4: Event khi attack kết thúc
       this.mixer.addEventListener("finished", (e: any) => {
         if (e.action === this.actions.attack) {
           this.isAttacking = false;
@@ -152,14 +151,12 @@ export class Enemy {
         this.loadClip(this.cfg.animDeath),
       ]);
 
-      // ✅ Sửa 7: idle clip
       if (idle) {
         const a = this.mixer.clipAction(idle);
         a.paused = true;
         this.actions.idle = a;
       }
       if (walk)   this.actions.walk   = this.mixer.clipAction(walk);
-      // ✅ Sửa 3: Attack clip loop once
       if (attack) {
         const a = this.mixer.clipAction(attack);
         a.loop = THREE.LoopOnce;
@@ -258,7 +255,6 @@ export class Enemy {
     const hh = this.hudContainer.clientHeight / 2;
     const sx = pos.x *  hw + hw;
     const sy = pos.y * -hh + hh;
-    // ✅ Sửa 6: Kiểm tra phía trước và sau camera
     const visible = pos.z > -1 && pos.z < 1;
     this.hpBarEl.style.opacity  = visible ? "1" : "0";
     this.hpBarEl.style.left     = `${sx}px`;
@@ -312,7 +308,6 @@ export class Enemy {
 
   isDead() { return this.state === "dead"; }
 
-  // ✅ Sửa 8: Death
   private die() {
     this.state = "dead";
     if (this.actions.death) {
@@ -389,7 +384,6 @@ export class Enemy {
           break;
         }
 
-        // ✅ Sửa 5: Attack state cải tiến
         if (this.attackTimer <= 0 && !this.isAttacking) {
           this.attackTimer = this.cfg.attackCooldown;
           this.isAttacking = true;
@@ -476,4 +470,4 @@ export class EnemyManager {
     this.enemies.forEach(e => e.dispose());
     this.enemies = [];
   }
-      }
+                       }
