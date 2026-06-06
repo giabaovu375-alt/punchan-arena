@@ -2,7 +2,7 @@ import * as THREE from "three";
 import {
   ANIM_KEYS, COMBAT_ANIMS, COMBO_CHAIN,
   type AnimKey, type AnimClipMap,
-} from "./types";
+} from "../types";  // sửa đường dẫn cho đúng vị trí mới
 
 export interface AnimationControllerCallbacks {
   isMoving: () => boolean;
@@ -12,19 +12,20 @@ export interface AnimationControllerCallbacks {
 export interface SetupResult {
   modelRoot: THREE.Object3D;
   playerHeight: number;
-  /** footOffset để PlayerController.setFloor() dùng */
   footOffset: number;
 }
 
 export class AnimationController {
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Partial<Record<AnimKey, THREE.AnimationAction>> = {};
+  private actionToKey = new Map<THREE.AnimationAction, AnimKey>(); // Reverse lookup
   private currentAction: THREE.AnimationAction | null = null;
   private currentKey: AnimKey = "idle";
   private fallbackAnimKey: AnimKey | null = null;
 
   private isAttacking = false;
   private attackCooldown = 0;
+  private attackLockTimer = 0; // Safety timeout cho isAttacking
 
   private comboCount = 0;
   private comboTimer = 0;
@@ -101,12 +102,13 @@ export class AnimationController {
         action.clampWhenFinished = true;
       }
       this.actions[key] = action;
+      this.actionToKey.set(action, key); // Lưu reverse map
       if (!this.fallbackAnimKey) this.fallbackAnimKey = key;
     }
 
+    // Xử lý sự kiện kết thúc animation
     this.mixer.addEventListener("finished", (e: any) => {
-      const doneKey = (Object.entries(this.actions) as [AnimKey, THREE.AnimationAction][])
-        .find(([, a]) => a === e.action)?.[0];
+      const doneKey = this.actionToKey.get(e.action);
       if (!doneKey) return;
 
       if (doneKey === "death" && this.actions.gettingUp) {
@@ -126,7 +128,6 @@ export class AnimationController {
       : this.actions.walk ? "walk"
       : (this.fallbackAnimKey ?? "idle");
 
-    // ── Fix T-pose: warm up mixer trước khi render frame đầu ──────────────
     const startAction = this.actions[startKey];
     if (startAction) {
       startAction.enabled = true;
@@ -136,7 +137,7 @@ export class AnimationController {
       this.currentAction = startAction;
       this.currentKey = startKey;
     }
-    // Warm up 3 tick để bones có giá trị trước frame đầu
+    // Warm up mixer
     this.mixer.update(0);
     this.mixer.update(0.001);
     this.mixer.update(0.001);
@@ -153,7 +154,6 @@ export class AnimationController {
 
     const prev = this.currentAction;
 
-    // ── Fix T-pose: crossfade thay vì stop-all rồi play ───────────────────
     if (prev && prev !== next && fade > 0) {
       const needReset = COMBAT_ANIMS.has(key) || key === "jump";
       if (needReset) next.reset();
@@ -163,9 +163,10 @@ export class AnimationController {
       prev.crossFadeTo(next, fade, true);
       next.play();
     } else {
-      // instant switch (fade = 0) — vẫn dùng cho attack/combo
-      for (const a of Object.values(this.actions)) {
-        if (a && a !== next) { a.stop(); a.enabled = false; }
+      // Instant switch (fade = 0) – chỉ stop action hiện tại, không stop tất cả
+      if (prev && prev !== next) {
+        prev.stop();
+        prev.enabled = false;
       }
       next.reset();
       next.enabled = true;
@@ -192,15 +193,26 @@ export class AnimationController {
 
     this.isAttacking = true;
     this.attackCooldown = 0.6;
+    this.attackLockTimer = 0.8; // Safety timeout > animation dài nhất
     this.playAnim(key, 0.1);
 
-    this.comboCount++;
+    this.comboCount = Math.min(this.comboCount + 1, 999);
     this.comboTimer = 1.6;
     this.cb.onComboChanged?.(this.comboCount);
   }
 
   update(dt: number): { isAttacking: boolean } {
     if (this.attackCooldown > 0) this.attackCooldown -= dt;
+
+    // Safety timeout – nếu attack animation không tự reset
+    if (this.attackLockTimer > 0) {
+      this.attackLockTimer -= dt;
+      if (this.attackLockTimer <= 0) {
+        this.isAttacking = false;
+        this.comboCount = 0;
+        this.cb.onComboChanged?.(0);
+      }
+    }
 
     if (this.comboCount > 0) {
       this.comboTimer -= dt;
