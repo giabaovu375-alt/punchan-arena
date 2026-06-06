@@ -6,36 +6,35 @@ import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader";
 // CONFIG
 // ─────────────────────────────────────────────────────────────────────────────
 export interface EnemyConfig {
-  modelUrl: string;
-  animIdle:    string;
-  animWalk:    string;
-  animAttack:  string;
-  animDeath:   string;
-  scale?:      number;
-  maxHp?:      number;
-  moveSpeed?:  number;
-  chaseRange?: number;
-  attackRange?:number;
-  attackDamage?:number;
-  attackCooldown?:number;
-  patrolRadius?: number;
+  modelUrl:        string;
+  animIdle:        string;
+  animWalk:        string;
+  animAttack:      string;
+  animDeath:       string;
+  scale?:          number;
+  maxHp?:          number;
+  moveSpeed?:      number;
+  chaseRange?:     number;
+  attackRange?:    number;
+  attackDamage?:   number;
+  attackCooldown?: number;
+  patrolRadius?:   number;
 }
 
-// ─── CONFIG MẶC ĐỊNH CHO GOBLIN (đã tăng scale lên 4.0) ─────────────────────
 export const GOBLIN_CONFIG: EnemyConfig = {
-  modelUrl:    "/model/goblin.fbx",
-  animIdle:    "/animation/animation-goblin/Walking.fbx",
-  animWalk:    "/animation/animation-goblin/Walking.fbx",
-  animAttack:  "/animation/animation-goblin/Standing Melee Attack Backhand.fbx",
-  animDeath:   "/animation/animation-goblin/Zombie Reaction Hit.fbx",
-  scale:       4.0,   // 👈 Tăng từ 1.5 lên 4.0 để dễ thấy
-  maxHp:       150,
-  moveSpeed:   2.2,
-  chaseRange:  15,
-  attackRange: 2.5,
-  attackDamage: 12,
+  modelUrl:       "/model/goblin.fbx",
+  animIdle:       "/animation/animation-goblin/Walking.fbx",
+  animWalk:       "/animation/animation-goblin/Walking.fbx",
+  animAttack:     "/animation/animation-goblin/Standing Melee Attack Backhand.fbx",
+  animDeath:      "/animation/animation-goblin/Zombie Reaction Hit.fbx",
+  scale:          4.0,
+  maxHp:          150,
+  moveSpeed:      2.2,
+  chaseRange:     15,
+  attackRange:    2.5,
+  attackDamage:   12,
   attackCooldown: 1.2,
-  patrolRadius: 6,
+  patrolRadius:   6,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -51,18 +50,17 @@ export class Enemy {
   private hp: number;
   private readonly cfg: Required<EnemyConfig>;
 
-  private spawnPos: THREE.Vector3;
-  private patrolTarget: THREE.Vector3;
+  private spawnPos:        THREE.Vector3;
+  private patrolTarget:    THREE.Vector3;
   private patrolWaitTimer = 0;
+  private attackTimer     = 0;
+  private isAttacking     = false;
 
-  private attackTimer = 0;
-  private isAttacking = false;
-
-  private hpBarEl: HTMLElement | null = null;
-  private hpFillEl: HTMLElement | null = null;
+  private hpBarEl:   HTMLElement | null = null;
+  private hpFillEl:  HTMLElement | null = null;
   private hpLabelEl: HTMLElement | null = null;
 
-  private _dir = new THREE.Vector3();
+  private _dir  = new THREE.Vector3();
   private _flat = new THREE.Vector3();
 
   constructor(
@@ -83,13 +81,14 @@ export class Enemy {
       ...config,
     };
 
-    this.hp = this.cfg.maxHp;
-    this.spawnPos = spawnPos.clone();
+    this.hp           = this.cfg.maxHp;
+    this.spawnPos     = spawnPos.clone();
     this.patrolTarget = spawnPos.clone();
 
     this.root = new THREE.Group();
     this.root.position.copy(spawnPos);
     this.scene.add(this.root);
+
     this.buildPlaceholder();
     this.buildHpBar();
     this.loadAssets();
@@ -97,50 +96,88 @@ export class Enemy {
     this.patrolWaitTimer = 1 + Math.random() * 1.5;
   }
 
-  // ── Placeholder capsule (hiện ngay lập tức) ────────────────────────────
+  // ── Placeholder ────────────────────────────────────────────────────────
   private buildPlaceholder() {
-    const mat = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.7 });
+    const mat  = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.7 });
     const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.0, 4, 8), mat);
-    body.position.y = 1.0;
-    body.castShadow = true;
-    body.name = "__placeholder";
+    body.position.y   = 1.0;
+    body.castShadow   = true;
+    body.frustumCulled = false;   // ← fix biến mất
+    body.name         = "__placeholder";
     this.root.add(body);
+
     const head = new THREE.Mesh(
       new THREE.SphereGeometry(0.28, 12, 12),
       new THREE.MeshStandardMaterial({ color: 0xdd4444 }),
     );
-    head.position.y = 1.9;
-    head.castShadow = true;
-    head.name = "__placeholder";
+    head.position.y    = 1.9;
+    head.castShadow    = true;
+    head.frustumCulled = false;   // ← fix biến mất
+    head.name          = "__placeholder";
     this.root.add(head);
-    const eyeMat = new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff2200, emissiveIntensity: 2 });
+
+    const eyeMat = new THREE.MeshStandardMaterial({
+      color: 0xff0000, emissive: 0xff2200, emissiveIntensity: 2,
+    });
     for (const sx of [-0.12, 0.12]) {
       const eye = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 6), eyeMat);
       eye.position.set(sx, 1.92, 0.24);
-      eye.name = "__placeholder";
+      eye.frustumCulled = false;
+      eye.name          = "__placeholder";
       this.root.add(eye);
     }
   }
 
-  // ── Load model + animations ─────────────────────────────────────────────
+  // ── Load model + animations ────────────────────────────────────────────
   private async loadAssets() {
     try {
       const model = await this.loadModel(this.cfg.modelUrl);
       model.scale.setScalar(this.cfg.scale);
-      model.traverse(n => { if ((n as THREE.Mesh).isMesh) n.castShadow = true; });
 
-      const toRemove = this.root.children.filter(c => c.name === "__placeholder");
-      toRemove.forEach(c => this.root.remove(c));
+      // ── Fix frustumCulled + nâng chất lượng material ─────────────────
+      model.traverse(n => {
+        if (!(n as THREE.Mesh).isMesh) return;
+        const mesh = n as THREE.Mesh;
+
+        mesh.castShadow    = true;
+        mesh.frustumCulled = false;   // ← quan trọng nhất, fix biến mất
+
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        mats.forEach((mat: any) => {
+          // Texture sRGB + anisotropy → màu đúng, nét hơn
+          if (mat.map) {
+            mat.map.colorSpace  = THREE.SRGBColorSpace;
+            mat.map.anisotropy  = 8;
+            mat.map.needsUpdate = true;
+          }
+          if (mat.normalMap) {
+            mat.normalMap.anisotropy = 8;
+          }
+
+          // Vật liệu trông thật hơn
+          mat.roughness         = Math.min(mat.roughness  ?? 0.8, 0.85);
+          mat.metalness         = Math.min(mat.metalness  ?? 0.0, 0.2);
+          mat.envMapIntensity   = 1.0;
+
+          // Skinned mesh không cần DoubleSide
+          if (mat.side === THREE.DoubleSide) mat.side = THREE.FrontSide;
+
+          mat.needsUpdate = true;
+        });
+      });
+
+      // Xóa placeholder, gắn model thật
+      this.root.children
+        .filter(c => c.name === "__placeholder")
+        .forEach(c => this.root.remove(c));
       this.root.add(model);
 
+      // ── Mixer ─────────────────────────────────────────────────────────
       this.mixer = new THREE.AnimationMixer(model);
-
       this.mixer.addEventListener("finished", (e: any) => {
         if (e.action === this.actions.attack) {
           this.isAttacking = false;
-          if (this.state !== "dead") {
-            this.playAnim("idle");
-          }
+          if (this.state !== "dead") this.playAnim("idle");
         }
       });
 
@@ -156,21 +193,24 @@ export class Enemy {
         a.paused = true;
         this.actions.idle = a;
       }
-      if (walk)   this.actions.walk   = this.mixer.clipAction(walk);
+      if (walk) {
+        this.actions.walk = this.mixer.clipAction(walk);
+      }
       if (attack) {
         const a = this.mixer.clipAction(attack);
-        a.loop = THREE.LoopOnce;
+        a.loop              = THREE.LoopOnce;
         a.clampWhenFinished = true;
         this.actions.attack = a;
       }
       if (death) {
         const a = this.mixer.clipAction(death);
-        a.loop = THREE.LoopOnce;
+        a.loop              = THREE.LoopOnce;
         a.clampWhenFinished = true;
-        this.actions.death = a;
+        this.actions.death  = a;
       }
 
       this.playAnim("idle");
+
     } catch (err) {
       console.warn("Enemy asset load error:", err);
     }
@@ -188,12 +228,7 @@ export class Enemy {
 
   private loadClip(url: string): Promise<THREE.AnimationClip | null> {
     return new Promise((res) => {
-      new FBXLoader().load(
-        url,
-        fbx => res(fbx.animations[0] ?? null),
-        undefined,
-        () => res(null),
-      );
+      new FBXLoader().load(url, fbx => res(fbx.animations[0] ?? null), undefined, () => res(null));
     });
   }
 
@@ -205,21 +240,19 @@ export class Enemy {
     this.currentAction = next;
   }
 
-  // ── Thanh HP nổi (DOM overlay) ─────────────────────────────────────────
+  // ── HP bar DOM ─────────────────────────────────────────────────────────
   private buildHpBar() {
     const wrap = document.createElement("div");
     wrap.style.cssText = `
       position:absolute; pointer-events:none; z-index:20;
       display:flex; flex-direction:column; align-items:center; gap:2px;
-      transform:translateX(-50%);
-      opacity:0; transition:opacity 0.2s;
+      transform:translateX(-50%); opacity:0; transition:opacity 0.2s;
     `;
     const track = document.createElement("div");
     track.style.cssText = `
       width:56px; height:5px; border-radius:99px;
       background:rgba(0,0,0,0.5);
-      border:1px solid rgba(255,255,255,0.15);
-      overflow:hidden;
+      border:1px solid rgba(255,255,255,0.15); overflow:hidden;
     `;
     const fill = document.createElement("div");
     fill.style.cssText = `
@@ -228,15 +261,13 @@ export class Enemy {
       transition:width 0.15s ease;
     `;
     track.appendChild(fill);
-
     const lbl = document.createElement("div");
     lbl.style.cssText = `
       font-size:9px; font-family:'SF Pro Display',sans-serif;
       color:rgba(255,255,255,0.6); letter-spacing:0.05em;
       text-shadow:0 1px 3px #000;
     `;
-    lbl.textContent = "???";
-
+    lbl.textContent = String(this.cfg.maxHp);
     wrap.appendChild(track);
     wrap.appendChild(lbl);
     this.hudContainer.appendChild(wrap);
@@ -245,7 +276,6 @@ export class Enemy {
     this.hpLabelEl = lbl;
   }
 
-  // ── Update HP bar vị trí trên màn hình ────────────────────────────────
   private updateHpBarPosition(camera: THREE.Camera) {
     if (!this.hpBarEl || this.state === "dead") return;
     const pos = this.root.position.clone();
@@ -253,18 +283,16 @@ export class Enemy {
     pos.project(camera);
     const hw = this.hudContainer.clientWidth  / 2;
     const hh = this.hudContainer.clientHeight / 2;
-    const sx = pos.x *  hw + hw;
-    const sy = pos.y * -hh + hh;
     const visible = pos.z > -1 && pos.z < 1;
-    this.hpBarEl.style.opacity  = visible ? "1" : "0";
-    this.hpBarEl.style.left     = `${sx}px`;
-    this.hpBarEl.style.top      = `${sy}px`;
+    this.hpBarEl.style.opacity = visible ? "1" : "0";
+    this.hpBarEl.style.left   = `${pos.x *  hw + hw}px`;
+    this.hpBarEl.style.top    = `${pos.y * -hh + hh}px`;
   }
 
   private refreshHpBar() {
     if (!this.hpFillEl || !this.hpLabelEl) return;
     const pct = Math.max(0, this.hp / this.cfg.maxHp * 100);
-    this.hpFillEl.style.width = `${pct}%`;
+    this.hpFillEl.style.width      = `${pct}%`;
     this.hpFillEl.style.background = pct > 50
       ? "linear-gradient(90deg,#22c55e,#86efac)"
       : pct > 25
@@ -273,7 +301,7 @@ export class Enemy {
     this.hpLabelEl.textContent = `${Math.ceil(this.hp)}`;
   }
 
-  // ── Patrol helpers ─────────────────────────────────────────────────────
+  // ── Patrol ─────────────────────────────────────────────────────────────
   private pickPatrolTarget() {
     const angle = Math.random() * Math.PI * 2;
     const r     = (0.4 + Math.random() * 0.6) * this.cfg.patrolRadius;
@@ -284,14 +312,13 @@ export class Enemy {
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // PUBLIC: nhận đòn từ player
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Nhận damage ────────────────────────────────────────────────────────
   takeDamage(dmg: number) {
     if (this.state === "dead") return;
     this.hp = Math.max(0, this.hp - dmg);
     this.refreshHpBar();
 
+    // Flash đỏ
     this.root.traverse(n => {
       const m = n as THREE.Mesh;
       if (!m.isMesh) return;
@@ -310,40 +337,34 @@ export class Enemy {
 
   private die() {
     this.state = "dead";
-    if (this.actions.death) {
-      this.playAnim("death", 0.1);
-    }
-    if (this.hpBarEl) {
-      this.hpBarEl.style.opacity = "0";
-    }
+    if (this.actions.death) this.playAnim("death", 0.1);
+    if (this.hpBarEl) this.hpBarEl.style.opacity = "0";
     setTimeout(() => {
       this.root.visible = false;
       this.dispose();
     }, 2500);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // UPDATE
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Update ─────────────────────────────────────────────────────────────
   update(dt: number, playerPos: THREE.Vector3, camera: THREE.Camera): number {
     if (this.state === "dead") return 0;
 
     this.mixer?.update(dt);
     this.updateHpBarPosition(camera);
 
-    const distToPlayer = this.root.position.distanceTo(playerPos);
-    let damageDealt = 0;
+    const dist = this.root.position.distanceTo(playerPos);
+    let dmg = 0;
 
     switch (this.state) {
 
       case "patrol": {
-        if (distToPlayer < this.cfg.chaseRange) {
+        if (dist < this.cfg.chaseRange) {
           this.state = "chase";
           this.playAnim("walk");
           break;
         }
-        const distTarget = this.root.position.distanceTo(this.patrolTarget);
-        if (distTarget < 0.5) {
+        const d2t = this.root.position.distanceTo(this.patrolTarget);
+        if (d2t < 0.5) {
           this.patrolWaitTimer -= dt;
           this.playAnim("idle");
           if (this.patrolWaitTimer <= 0) {
@@ -359,13 +380,13 @@ export class Enemy {
       }
 
       case "chase": {
-        if (distToPlayer > this.cfg.chaseRange * 1.3) {
+        if (dist > this.cfg.chaseRange * 1.3) {
           this.state = "patrol";
           this.pickPatrolTarget();
           this.playAnim("walk");
           break;
         }
-        if (distToPlayer <= this.cfg.attackRange) {
+        if (dist <= this.cfg.attackRange) {
           this.state = "attack";
           break;
         }
@@ -378,42 +399,37 @@ export class Enemy {
         this.attackTimer -= dt;
         this.faceTarget(playerPos);
 
-        if (distToPlayer > this.cfg.attackRange * 1.2) {
+        if (dist > this.cfg.attackRange * 1.2) {
           this.state = "chase";
           this.playAnim("walk");
           break;
         }
-
         if (this.attackTimer <= 0 && !this.isAttacking) {
           this.attackTimer = this.cfg.attackCooldown;
           this.isAttacking = true;
           this.playAnim("attack", 0.1);
-          damageDealt = this.cfg.attackDamage;
+          dmg = this.cfg.attackDamage;
         }
         break;
       }
     }
 
-    return damageDealt;
+    return dmg;
   }
 
-  // ── Movement helpers ───────────────────────────────────────────────────
   private moveToward(target: THREE.Vector3, dt: number, speed: number) {
-    this._dir.subVectors(target, this.root.position);
-    this._dir.y = 0;
-    const dist = this._dir.length();
-    if (dist < 0.01) return;
+    this._dir.subVectors(target, this.root.position).setY(0);
+    const len = this._dir.length();
+    if (len < 0.01) return;
     this._dir.normalize();
-    this.root.position.addScaledVector(this._dir, Math.min(speed * dt, dist));
+    this.root.position.addScaledVector(this._dir, Math.min(speed * dt, len));
     this.faceTarget(target);
   }
 
   private faceTarget(target: THREE.Vector3) {
-    this._flat.subVectors(target, this.root.position);
-    this._flat.y = 0;
+    this._flat.subVectors(target, this.root.position).setY(0);
     if (this._flat.lengthSq() < 0.001) return;
-    const angle = Math.atan2(this._flat.x, this._flat.z);
-    this.root.rotation.y = angle;
+    this.root.rotation.y = Math.atan2(this._flat.x, this._flat.z);
   }
 
   // ── Cleanup ────────────────────────────────────────────────────────────
@@ -425,8 +441,8 @@ export class Enemy {
       const m = n as THREE.Mesh;
       if (m.isMesh) {
         m.geometry?.dispose();
-        const mats = Array.isArray(m.material) ? m.material : [m.material];
-        mats.forEach((mat: THREE.Material) => mat.dispose());
+        (Array.isArray(m.material) ? m.material : [m.material])
+          .forEach((mat: THREE.Material) => mat.dispose());
       }
     });
   }
@@ -450,12 +466,11 @@ export class EnemyManager {
   }
 
   update(dt: number, playerPos: THREE.Vector3, camera: THREE.Camera): number {
-    let totalDmg = 0;
-    for (const e of this.enemies) {
-      totalDmg += e.update(dt, playerPos, camera);
-    }
-    this.enemies = this.enemies.filter(e => !e.isDead() || e.root.parent !== null);
-    return totalDmg;
+    let total = 0;
+    for (const e of this.enemies) total += e.update(dt, playerPos, camera);
+    // Dọn quái đã dispose (root bị remove khỏi scene)
+    this.enemies = this.enemies.filter(e => e.root.parent !== null);
+    return total;
   }
 
   hitInRange(origin: THREE.Vector3, range: number, damage: number) {
@@ -466,8 +481,16 @@ export class EnemyManager {
     }
   }
 
+  /** Dùng cho lock-on system trong CombatController */
+  getEnemyRoots(): THREE.Object3D[] {
+    return this.enemies
+      .filter(e => !e.isDead())
+      .map(e => e.root);
+  }
+
   dispose() {
     this.enemies.forEach(e => e.dispose());
     this.enemies = [];
   }
-                       }
+  }
+      
