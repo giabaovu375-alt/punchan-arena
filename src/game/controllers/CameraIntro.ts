@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { NPC_POSITION, PLAYER_SPAWN } from "./IntroScene";
+import { NPC_POSITION, PLAYER_SPAWN } from "../IntroScene";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
