@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { type CharacterDef } from "./characters";
-import { type AnimClipMap, type AnimKey, type InputState, ANIM_KEYS } from "./types"; // file types.ts gốc
-import { GameEvents } from "./types/events"; // hoặc "./types" nếu đã export từ index
+import { type AnimClipMap, type AnimKey, type InputState, ANIM_KEYS } from "./types";
+import { GameEvents } from "./types/events";
 
 import {
   AnimationController,
@@ -68,6 +68,7 @@ export class GameEngine {
 
   private animCtrl!: AnimationController;
   private playerCtrl!: PlayerController;
+  private combatCtrl!: CombatController; // FIX: khai báo
   private hud!: HUD;
   private mobileUI: MobileUI | null = null;
   private dialogue!: DialogueUI;
@@ -85,7 +86,6 @@ export class GameEngine {
   private _tgt       = new THREE.Vector3();
   private _camTarget = new THREE.Vector3();
 
-  // ── Constructor private ───────────────────────────────────────────────────
   private constructor(
     container: HTMLElement,
     character: CharacterDef,
@@ -96,17 +96,14 @@ export class GameEngine {
     this.character = character;
     this.isMobile = ("ontouchstart" in window) || navigator.maxTouchPoints > 0;
 
-    // ── Scene ─────────────────────────────────────────────────────────────
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x9bc4e2);
     this.scene.fog = new THREE.Fog(0x9bc4e2, 40, 180);
 
-    // ── Camera – FOV 52 nhân vật to hơn, ít méo hơn ───────────────────────
     this.camera = new THREE.PerspectiveCamera(
       52, container.clientWidth / container.clientHeight, 0.1, 600,
     );
 
-    // ── Renderer – tối ưu theo thiết bị ───────────────────────────────────
     this.renderer = new THREE.WebGLRenderer({
       antialias: !this.isMobile,
       powerPreference: "high-performance",
@@ -123,19 +120,28 @@ export class GameEngine {
 
     this.screenManager = new ScreenManager();
 
-    // ── Player rig ────────────────────────────────────────────────────────
     this.player = new THREE.Group();
     this.player.name = "PlayerRig";
-
-    this.playerCtrl = new PlayerController({
-      character,
-      worldRadius: 140,
-      onAttack: (key) => this.animCtrl.triggerAttack(key),
-    });
 
     this.animCtrl = new AnimationController({
       isMoving: () => this.playerCtrl.isMovingNow(),
       onComboChanged: (count) => this.hud.flashCombo(count),
+    });
+
+    // FIX: khởi tạo CombatController
+    this.combatCtrl = new CombatController(
+      this.player,
+      this.camera,
+      this.container,
+      (key) => this.animCtrl.triggerAttack(key),
+      () => this.hubScene?.getEnemyRoots() ?? [],
+    );
+
+    this.playerCtrl = new PlayerController({
+      character,
+      worldRadius: 140,
+      // FIX: attack đi qua combatCtrl
+      onAttack: (key) => this.combatCtrl.scheduleAttack(key as "punch" | "kick" | "mmaKick"),
     });
 
     if (model) {
@@ -154,6 +160,13 @@ export class GameEngine {
 
     this.hud = new HUD(container, character, this.isMobile);
 
+    // FIX: lắng nghe PLAYER_DAMAGE → trừ HP
+    eventBus.on(GameEvents.PLAYER_DAMAGE, (data: { amount: number }) => {
+      this.playerCtrl.hp = Math.max(0, this.playerCtrl.hp - data.amount / 100);
+      this.hud.setHP(this.playerCtrl.hp);
+      this.combatCtrl.camShake.addTrauma(0.3);
+    });
+
     if (this.isMobile) {
       this.mobileUI = new MobileUI(
         container,
@@ -161,7 +174,7 @@ export class GameEngine {
         this.playerCtrl.input,
         {
           jump: () => this.playerCtrl.requestJump(),
-          attack: (key) => this.animCtrl.triggerAttack(key),
+          attack: (key) => this.combatCtrl.scheduleAttack(key as "punch" | "kick" | "mmaKick"),
           rotateCamera: (dYaw, dPitch) => {
             this.targetYaw   += dYaw;
             this.targetPitch += dPitch;
@@ -185,9 +198,7 @@ export class GameEngine {
     return new GameEngine(container, character, model, clips);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // LOADING OVERLAY
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ── Loading overlay ────────────────────────────────────────────────────────
   private showLoadingOverlay(text = "Đang tải...") {
     if (this.loadingOverlay) return;
     const el = document.createElement("div");
@@ -199,9 +210,7 @@ export class GameEngine {
       backdrop-filter:blur(8px);
       -webkit-backdrop-filter:blur(8px);
       font-family:'SF Pro Display','Helvetica Neue',sans-serif;
-      color:#fff;
-      gap:20px;
-      opacity:0;
+      color:#fff; gap:20px; opacity:0;
       transition:opacity 0.25s ease;
     `;
     el.innerHTML = `
@@ -230,9 +239,7 @@ export class GameEngine {
     setTimeout(() => el.parentElement?.removeChild(el), 300);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // SCENE LOADING
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ── Scene loading ──────────────────────────────────────────────────────────
   private clearThreeScene(target: THREE.Scene) {
     const toRemove: THREE.Object3D[] = [];
     target.traverse(o => {
@@ -258,6 +265,7 @@ export class GameEngine {
     this.sceneMode = "intro";
     this.npcTriggered = false;
     this.lastPortalTarget = null;
+    this.combatCtrl.reset();
   }
 
   private async switchToHub() {
@@ -284,10 +292,8 @@ export class GameEngine {
       return;
     }
 
-    // FIX: setPlayer và setCamera TRƯỚC khi update chạy
     hub.setPlayer(this.player);
     hub.setCamera(this.camera);
-
     hub.scene.add(this.player);
     this.hubScene = hub;
     this.playerCtrl.setColliders([]);
@@ -295,13 +301,12 @@ export class GameEngine {
     this.sceneMode = "hub";
     this.introHandles = null;
     this.lastPortalTarget = null;
+    this.combatCtrl.reset();
 
     this.hideLoadingOverlay();
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PLACEHOLDER
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ── Placeholder ────────────────────────────────────────────────────────────
   private createPlaceholder(): THREE.Object3D {
     const group = new THREE.Group();
     const bodyMat = new THREE.MeshStandardMaterial({
@@ -327,9 +332,7 @@ export class GameEngine {
     return group;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // MOUSE / RESIZE
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ── Mouse / Resize ─────────────────────────────────────────────────────────
   private bindMouseAndResize() {
     this.renderer.domElement.addEventListener("mousedown", this.onMouseDown);
     window.addEventListener("mouseup",   this.onMouseUp);
@@ -343,7 +346,7 @@ export class GameEngine {
     if (this.isMobile) return;
     this.isRotating = true;
     this.lastMouse = { x: e.clientX, y: e.clientY };
-    if (e.button === 0) this.animCtrl.triggerAttack("punch");
+    if (e.button === 0) this.combatCtrl.scheduleAttack("punch");
   };
 
   private onMouseUp = () => { this.isRotating = false; };
@@ -372,9 +375,7 @@ export class GameEngine {
     this.renderer.setSize(w, h);
   };
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PINCH-TO-ZOOM (mobile)
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ── Pinch zoom ─────────────────────────────────────────────────────────────
   private pinchStartDist = 0;
   private pinchStartCamDist = 0;
 
@@ -400,15 +401,12 @@ export class GameEngine {
     }
   };
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // GAME LOOP
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ── Game loop ──────────────────────────────────────────────────────────────
   private start() {
     if (this.isMobile) {
       this.renderer.domElement.addEventListener("touchstart", this.onTouchStart, { passive: true });
       this.renderer.domElement.addEventListener("touchmove",  this.onTouchMove,  { passive: true });
     }
-
     this.timer.update();
     const tick = () => {
       if (this.disposed) return;
@@ -416,8 +414,7 @@ export class GameEngine {
       const dt = Math.min(this.timer.getDelta(), 0.05);
       this.update(dt);
       const activeScene = this.sceneMode === "hub" && this.hubScene
-        ? this.hubScene.scene
-        : this.scene;
+        ? this.hubScene.scene : this.scene;
       this.renderer.render(activeScene, this.camera);
       this.rafId = requestAnimationFrame(tick);
     };
@@ -447,6 +444,10 @@ export class GameEngine {
     const resolvedPos = collisionManager.resolveCollisions(playerPos, playerRadius, "player");
     this.player.position.copy(resolvedPos);
 
+    // FIX: update combatCtrl + camera shake mỗi frame
+    this.combatCtrl.update(dt);
+    this.combatCtrl.camShake.apply(this.camera, dt);
+
     const { isAttacking } = this.animCtrl.update(dt);
     if (!isAttacking) this.animCtrl.drive(moving, sprinting, onGround);
 
@@ -459,7 +460,6 @@ export class GameEngine {
       this.bodyParts.head.position.y = 1.75 + bob;
     }
 
-    // ── Scene logic ───────────────────────────────────────────────────────
     if (this.sceneMode === "intro" && this.introHandles) {
       tickIntroScene(this.introHandles, dt);
       if (!this.npcTriggered && !locked && this.introHandles.checkNPCProximity(this.player.position)) {
@@ -467,9 +467,7 @@ export class GameEngine {
         this.dialogue.show(
           INTRO_NPC_DIALOGUE.npcName,
           INTRO_NPC_DIALOGUE.lines,
-          () => {
-            this.switchToHub().catch(err => console.error(err));
-          },
+          () => { this.switchToHub().catch(err => console.error(err)); },
         );
       }
     } else if (this.sceneMode === "hub" && this.hubScene && typeof this.hubScene.checkPortals === "function") {
@@ -493,7 +491,6 @@ export class GameEngine {
 
     this.dialogue.update(dt);
 
-    // ── Camera ────────────────────────────────────────────────────────────
     const camOff = this._camOff.set(
       Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch),
       -Math.sin(this.cameraPitch),
@@ -510,9 +507,7 @@ export class GameEngine {
     this.hud.setCompassYaw(this.cameraYaw);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PUBLIC API
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ── Public API ─────────────────────────────────────────────────────────────
   getScene()  { return this.scene; }
   getPlayer() { return this.player; }
   getMixer()  { return this.animCtrl.getMixer(); }
@@ -520,26 +515,23 @@ export class GameEngine {
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
-
     this.playerCtrl.unbindKeyboard();
     window.removeEventListener("mouseup",   this.onMouseUp);
     window.removeEventListener("mousemove", this.onMouseMove);
     window.removeEventListener("resize",    this.onResize);
-
     if (this.isMobile) {
       this.renderer.domElement.removeEventListener("touchstart", this.onTouchStart);
       this.renderer.domElement.removeEventListener("touchmove",  this.onTouchMove);
     }
-
     this.hideLoadingOverlay();
+    this.combatCtrl.dispose();
     this.mobileUI?.dispose();
     this.hud.dispose();
     this.dialogue.dispose();
     this.screenManager.dispose();
     this.renderer.dispose();
-
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-  }
-      
+    }
+  
