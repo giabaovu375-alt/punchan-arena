@@ -5,10 +5,10 @@ import { GameEvents } from "./types/events";
 
 import {
   AnimationController,
-  CameraController,
   CombatController,
   PlayerController,
   lerpAngle,
+  CameraIntro, // 👈 import CameraIntro
 } from "./controllers";
 
 import {
@@ -56,9 +56,9 @@ export class GameEngine {
   private bodyParts: { body: THREE.Object3D; head: THREE.Object3D } | null = null;
   private playerHeight = 1.6;
   private animTime = 0;
-  private elapsed = 0; // FIX: thêm elapsed cho tickIntroScene
+  private elapsed = 0;
 
-  // ── Camera ────────────────────────────────────────────────────────────────
+  // ── Camera (third‑person) ─────────────────────────────────────────────────
   private cameraYaw = 0;        private targetYaw = 0;
   private cameraPitch = -0.18;  private targetPitch = -0.18;
   private cameraDistance = 3.8; private targetDistance = 3.8;
@@ -82,6 +82,10 @@ export class GameEngine {
   private lastPortalTarget: string | null = null;
 
   private screenManager!: ScreenManager;
+
+  // ── Intro camera (sequence) ─────────────────────────────────────────────
+  private cameraIntro!: CameraIntro;
+  private introCompleted = false;
 
   private _camOff    = new THREE.Vector3();
   private _tgt       = new THREE.Vector3();
@@ -184,8 +188,16 @@ export class GameEngine {
       );
     }
 
+    // ── Dựng IntroScene trước để có cảnh cho camera bay ─────────────────
     this.loadIntroScene();
+
+    // ── Khởi động game loop ────────────────────────────────────────────
     this.start();
+
+    // ── Bắt đầu cutscene intro (sau khi game loop đã chạy) ──────────────
+    this.cameraIntro = new CameraIntro(this.camera, () => {
+      this.introCompleted = true;
+    });
   }
 
   public static async create(
@@ -197,7 +209,7 @@ export class GameEngine {
     return new GameEngine(container, character, model, clips);
   }
 
-  // ── Loading overlay ────────────────────────────────────────────────────────
+  // ── Loading overlay ────────────────────────────────────────────────────
   private showLoadingOverlay(text = "Đang tải...") {
     if (this.loadingOverlay) return;
     const el = document.createElement("div");
@@ -231,7 +243,7 @@ export class GameEngine {
     setTimeout(() => el.parentElement?.removeChild(el), 300);
   }
 
-  // ── Scene loading ──────────────────────────────────────────────────────────
+  // ── Scene loading ──────────────────────────────────────────────────────
   private clearThreeScene(target: THREE.Scene) {
     const toRemove: THREE.Object3D[] = [];
     target.traverse(o => {
@@ -300,7 +312,7 @@ export class GameEngine {
     this.hideLoadingOverlay();
   }
 
-  // ── Placeholder ────────────────────────────────────────────────────────────
+  // ── Placeholder ────────────────────────────────────────────────────────
   private createPlaceholder(): THREE.Object3D {
     const group = new THREE.Group();
     const bodyMat = new THREE.MeshStandardMaterial({
@@ -326,7 +338,7 @@ export class GameEngine {
     return group;
   }
 
-  // ── Mouse / Resize ─────────────────────────────────────────────────────────
+  // ── Mouse / Resize ─────────────────────────────────────────────────────
   private bindMouseAndResize() {
     this.renderer.domElement.addEventListener("mousedown", this.onMouseDown);
     window.addEventListener("mouseup",   this.onMouseUp);
@@ -337,14 +349,14 @@ export class GameEngine {
   }
 
   private onMouseDown = (e: MouseEvent) => {
-    if (this.isMobile) return;
+    if (this.isMobile || this.cameraIntro?.isActive()) return;
     this.isRotating = true;
     this.lastMouse  = { x: e.clientX, y: e.clientY };
     if (e.button === 0) this.combatCtrl.scheduleAttack("punch");
   };
   private onMouseUp   = () => { this.isRotating = false; };
   private onMouseMove = (e: MouseEvent) => {
-    if (!this.isRotating || this.isMobile) return;
+    if (!this.isRotating || this.isMobile || this.cameraIntro?.isActive()) return;
     this.targetYaw   -= (e.clientX - this.lastMouse.x) * 0.005;
     this.targetPitch -= (e.clientY - this.lastMouse.y) * 0.005;
     this.targetPitch  = Math.max(-1.2, Math.min(0.3, this.targetPitch));
@@ -365,7 +377,7 @@ export class GameEngine {
     this.renderer.setSize(w, h);
   };
 
-  // ── Pinch zoom ─────────────────────────────────────────────────────────────
+  // ── Pinch zoom ─────────────────────────────────────────────────────────
   private pinchStartDist = 0;
   private pinchStartCamDist = 0;
   private onTouchStart = (e: TouchEvent) => {
@@ -388,7 +400,7 @@ export class GameEngine {
     }
   };
 
-  // ── Game loop ──────────────────────────────────────────────────────────────
+  // ── Game loop ──────────────────────────────────────────────────────────
   private start() {
     if (this.isMobile) {
       this.renderer.domElement.addEventListener("touchstart", this.onTouchStart, { passive: true });
@@ -409,6 +421,15 @@ export class GameEngine {
   }
 
   private update(dt: number) {
+    // ── Camera intro đang chạy → giao toàn quyền cho nó ─────────────────
+    if (this.cameraIntro?.isActive()) {
+      this.cameraIntro.tick(dt);
+      // Vẫn cập nhật animation và dialogue (nếu có)
+      this.animCtrl.update(dt);
+      this.dialogue.update(dt);
+      return;
+    }
+
     this.elapsed += dt;
 
     const lk = 1 - Math.exp(-12 * dt);
@@ -449,7 +470,6 @@ export class GameEngine {
 
     // Scene logic
     if (this.sceneMode === "intro" && this.introHandles) {
-      // FIX: truyền elapsed vào tick
       tickIntroScene(this.introHandles, dt, this.elapsed);
 
       if (!this.npcTriggered && !locked && this.introHandles.checkNPCProximity(this.player.position)) {
@@ -498,7 +518,7 @@ export class GameEngine {
     this.hud.setCompassYaw(this.cameraYaw);
   }
 
-  // ── Public API ─────────────────────────────────────────────────────────────
+  // ── Public API ─────────────────────────────────────────────────────────
   getScene()  { return this.scene; }
   getPlayer() { return this.player; }
   getMixer()  { return this.animCtrl.getMixer(); }
@@ -524,4 +544,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-        }
+  }
