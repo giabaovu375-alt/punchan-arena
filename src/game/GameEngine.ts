@@ -56,6 +56,7 @@ export class GameEngine {
   private bodyParts: { body: THREE.Object3D; head: THREE.Object3D } | null = null;
   private playerHeight = 1.6;
   private animTime = 0;
+  private elapsed = 0; // FIX: thêm elapsed cho tickIntroScene
 
   // ── Camera ────────────────────────────────────────────────────────────────
   private cameraYaw = 0;        private targetYaw = 0;
@@ -68,7 +69,7 @@ export class GameEngine {
 
   private animCtrl!: AnimationController;
   private playerCtrl!: PlayerController;
-  private combatCtrl!: CombatController; // FIX: khai báo
+  private combatCtrl!: CombatController;
   private hud!: HUD;
   private mobileUI: MobileUI | null = null;
   private dialogue!: DialogueUI;
@@ -128,7 +129,6 @@ export class GameEngine {
       onComboChanged: (count) => this.hud.flashCombo(count),
     });
 
-    // FIX: khởi tạo CombatController
     this.combatCtrl = new CombatController(
       this.player,
       this.camera,
@@ -140,7 +140,6 @@ export class GameEngine {
     this.playerCtrl = new PlayerController({
       character,
       worldRadius: 140,
-      // FIX: attack đi qua combatCtrl
       onAttack: (key) => this.combatCtrl.scheduleAttack(key as "punch" | "kick" | "mmaKick"),
     });
 
@@ -160,7 +159,7 @@ export class GameEngine {
 
     this.hud = new HUD(container, character, this.isMobile);
 
-    // FIX: lắng nghe PLAYER_DAMAGE → trừ HP
+    // Lắng nghe damage từ goblin
     eventBus.on(GameEvents.PLAYER_DAMAGE, (data: { amount: number }) => {
       this.playerCtrl.hp = Math.max(0, this.playerCtrl.hp - data.amount / 100);
       this.hud.setHP(this.playerCtrl.hp);
@@ -173,7 +172,7 @@ export class GameEngine {
         this.renderer.domElement,
         this.playerCtrl.input,
         {
-          jump: () => this.playerCtrl.requestJump(),
+          jump:   () => this.playerCtrl.requestJump(),
           attack: (key) => this.combatCtrl.scheduleAttack(key as "punch" | "kick" | "mmaKick"),
           rotateCamera: (dYaw, dPitch) => {
             this.targetYaw   += dYaw;
@@ -207,23 +206,16 @@ export class GameEngine {
       display:flex; flex-direction:column;
       align-items:center; justify-content:center;
       background:rgba(0,0,0,0.78);
-      backdrop-filter:blur(8px);
-      -webkit-backdrop-filter:blur(8px);
+      backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
       font-family:'SF Pro Display','Helvetica Neue',sans-serif;
-      color:#fff; gap:20px; opacity:0;
-      transition:opacity 0.25s ease;
+      color:#fff; gap:20px; opacity:0; transition:opacity 0.25s ease;
     `;
     el.innerHTML = `
-      <div style="
-        width:46px; height:46px; border-radius:50%;
-        border:3px solid rgba(255,255,255,0.1);
-        border-top-color:#00f5d4;
-        animation:ge-spin 0.85s linear infinite;
-      "></div>
-      <div style="
-        font-size:12px; letter-spacing:0.22em;
-        text-transform:uppercase; color:rgba(255,255,255,0.7);
-      ">${text}</div>
+      <div style="width:46px;height:46px;border-radius:50%;
+        border:3px solid rgba(255,255,255,0.1);border-top-color:#00f5d4;
+        animation:ge-spin 0.85s linear infinite;"></div>
+      <div style="font-size:12px;letter-spacing:0.22em;text-transform:uppercase;
+        color:rgba(255,255,255,0.7);">${text}</div>
       <style>@keyframes ge-spin{to{transform:rotate(360deg)}}</style>
     `;
     this.container.appendChild(el);
@@ -262,9 +254,10 @@ export class GameEngine {
     if (this.player?.position && PLAYER_SPAWN) {
       this.player.position.copy(PLAYER_SPAWN);
     }
-    this.sceneMode = "intro";
-    this.npcTriggered = false;
+    this.sceneMode     = "intro";
+    this.npcTriggered  = false;
     this.lastPortalTarget = null;
+    this.elapsed       = 0;
     this.combatCtrl.reset();
   }
 
@@ -286,7 +279,7 @@ export class GameEngine {
 
     if (!loaded) {
       this.scene.add(this.player);
-      this.sceneMode = "intro";
+      this.sceneMode    = "intro";
       this.npcTriggered = false;
       this.hideLoadingOverlay();
       return;
@@ -295,11 +288,12 @@ export class GameEngine {
     hub.setPlayer(this.player);
     hub.setCamera(this.camera);
     hub.scene.add(this.player);
-    this.hubScene = hub;
+    this.hubScene         = hub;
+    this.elapsed          = 0;
     this.playerCtrl.setColliders([]);
     this.player.position.set(0, 0, 30);
-    this.sceneMode = "hub";
-    this.introHandles = null;
+    this.sceneMode        = "hub";
+    this.introHandles     = null;
     this.lastPortalTarget = null;
     this.combatCtrl.reset();
 
@@ -345,12 +339,10 @@ export class GameEngine {
   private onMouseDown = (e: MouseEvent) => {
     if (this.isMobile) return;
     this.isRotating = true;
-    this.lastMouse = { x: e.clientX, y: e.clientY };
+    this.lastMouse  = { x: e.clientX, y: e.clientY };
     if (e.button === 0) this.combatCtrl.scheduleAttack("punch");
   };
-
-  private onMouseUp = () => { this.isRotating = false; };
-
+  private onMouseUp   = () => { this.isRotating = false; };
   private onMouseMove = (e: MouseEvent) => {
     if (!this.isRotating || this.isMobile) return;
     this.targetYaw   -= (e.clientX - this.lastMouse.x) * 0.005;
@@ -358,7 +350,6 @@ export class GameEngine {
     this.targetPitch  = Math.max(-1.2, Math.min(0.3, this.targetPitch));
     this.lastMouse = { x: e.clientX, y: e.clientY };
   };
-
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
     this.targetDistance = Math.max(
@@ -366,7 +357,6 @@ export class GameEngine {
       Math.min(this.CAM_DIST_MAX, this.targetDistance + e.deltaY * 0.012),
     );
   };
-
   private onResize = () => {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
@@ -378,7 +368,6 @@ export class GameEngine {
   // ── Pinch zoom ─────────────────────────────────────────────────────────────
   private pinchStartDist = 0;
   private pinchStartCamDist = 0;
-
   private onTouchStart = (e: TouchEvent) => {
     if (e.touches.length === 2) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -387,16 +376,14 @@ export class GameEngine {
       this.pinchStartCamDist = this.targetDistance;
     }
   };
-
   private onTouchMove = (e: TouchEvent) => {
     if (e.touches.length === 2) {
       const dx   = e.touches[0].clientX - e.touches[1].clientX;
       const dy   = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.hypot(dx, dy);
-      const scale = this.pinchStartDist / dist;
       this.targetDistance = Math.max(
         this.CAM_DIST_MIN,
-        Math.min(this.CAM_DIST_MAX, this.pinchStartCamDist * scale),
+        Math.min(this.CAM_DIST_MAX, this.pinchStartCamDist * (this.pinchStartDist / dist)),
       );
     }
   };
@@ -422,6 +409,8 @@ export class GameEngine {
   }
 
   private update(dt: number) {
+    this.elapsed += dt;
+
     const lk = 1 - Math.exp(-12 * dt);
     this.cameraYaw       = lerpAngle(this.cameraYaw, this.targetYaw, lk);
     this.cameraPitch    += (this.targetPitch    - this.cameraPitch)    * lk;
@@ -440,11 +429,9 @@ export class GameEngine {
       playerPos = this.player.position.clone();
     }
 
-    const playerRadius = 0.4;
-    const resolvedPos = collisionManager.resolveCollisions(playerPos, playerRadius, "player");
+    const resolvedPos = collisionManager.resolveCollisions(playerPos, 0.4, "player");
     this.player.position.copy(resolvedPos);
 
-    // FIX: update combatCtrl + camera shake mỗi frame
     this.combatCtrl.update(dt);
     this.combatCtrl.camShake.apply(this.camera, dt);
 
@@ -456,12 +443,15 @@ export class GameEngine {
       const bob = moving && onGround
         ? Math.sin(this.animTime * 14) * 0.06
         : Math.sin(this.animTime * 2)  * 0.03;
-      this.bodyParts.body.position.y = 0.9 + bob;
+      this.bodyParts.body.position.y = 0.9  + bob;
       this.bodyParts.head.position.y = 1.75 + bob;
     }
 
+    // Scene logic
     if (this.sceneMode === "intro" && this.introHandles) {
-      tickIntroScene(this.introHandles, dt);
+      // FIX: truyền elapsed vào tick
+      tickIntroScene(this.introHandles, dt, this.elapsed);
+
       if (!this.npcTriggered && !locked && this.introHandles.checkNPCProximity(this.player.position)) {
         this.npcTriggered = true;
         this.dialogue.show(
@@ -491,6 +481,7 @@ export class GameEngine {
 
     this.dialogue.update(dt);
 
+    // Camera
     const camOff = this._camOff.set(
       Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch),
       -Math.sin(this.cameraPitch),
@@ -533,5 +524,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-    }
-  
+        }
