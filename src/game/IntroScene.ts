@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 
 const PROXY = "https://hf-proxy.giabaovu375.workers.dev";
 
@@ -18,7 +17,94 @@ const TREE_PAIRS: { z: number }[] = [
   { z: -6 }, { z: -10 }, { z: -14 },
 ];
 
-// ── Leaf particles ─────────────────────────────────────────────────────────
+// ── Tối ưu #1: Load mỗi model cây đúng 1 lần, clone cho các vị trí ────────
+const GREEN_MODELS = ["CommonTree_1", "CommonTree_2", "CommonTree_3", "CommonTree_4"];
+
+interface TreePlacement {
+  modelName: string;
+  x: number;
+  z: number;
+  scale: number;
+  rotY: number;
+}
+
+function buildTreePlacements(): TreePlacement[] {
+  const placements: TreePlacement[] = [];
+  for (let i = 0; i < TREE_PAIRS.length; i++) {
+    const { z } = TREE_PAIRS[i];
+    const modelName = GREEN_MODELS[i % GREEN_MODELS.length];
+    const scale = 0.85 + (i % 3) * 0.12;
+    // Trái
+    placements.push({
+      modelName,
+      x: -5.5,
+      z,
+      scale,
+      rotY: i * 0.7,
+    });
+    // Phải
+    placements.push({
+      modelName,
+      x: 5.5,
+      z,
+      scale,
+      rotY: i * 1.1 + Math.PI,
+    });
+  }
+  return placements;
+}
+
+async function loadAndPlaceTrees(
+  loader: GLTFLoader,
+  scene: THREE.Scene,
+  placements: TreePlacement[],
+): Promise<THREE.Object3D[]> {
+  // Nhóm placements theo modelName
+  const groups = new Map<string, TreePlacement[]>();
+  for (const p of placements) {
+    const arr = groups.get(p.modelName) || [];
+    arr.push(p);
+    groups.set(p.modelName, arr);
+  }
+
+  const loadedTrees: THREE.Object3D[] = [];
+
+  // Với mỗi model, load 1 lần, clone ra các vị trí
+  const loadPromises = Array.from(groups.entries()).map(
+    ([modelName, placementsForModel]) =>
+      new Promise<void>((resolve) => {
+        loader.load(
+          `/model-tree/${modelName}.gltf`,
+          (gltf) => {
+            const template = gltf.scene;
+            for (const p of placementsForModel) {
+              const tree = template.clone(true);
+              tree.position.set(p.x, 0, p.z);
+              tree.scale.setScalar(p.scale);
+              tree.rotation.y = p.rotY;
+              tree.traverse((o) => {
+                if ((o as THREE.Mesh).isMesh) {
+                  o.castShadow = true;
+                  o.receiveShadow = true;
+                  (o as THREE.Mesh).frustumCulled = false;
+                }
+              });
+              scene.add(tree);
+              loadedTrees.push(tree);
+            }
+            resolve();
+          },
+          undefined,
+          () => resolve(), // bỏ qua lỗi, vẫn tiếp tục
+        );
+      }),
+  );
+
+  await Promise.all(loadPromises);
+  return loadedTrees;
+}
+
+// ── Leaf particles (bản cũ, có rotVel riêng từng lá) ──────────────────────
 interface Leaf {
   mesh:    THREE.Mesh;
   vel:     THREE.Vector3;
@@ -47,8 +133,8 @@ function createLeafSystem(scene: THREE.Scene, count = 30): Leaf[] {
     scene.add(mesh);
     leaves.push({
       mesh,
-      vel:     new THREE.Vector3((Math.random() - 0.5) * 0.4, -0.3 - Math.random() * 0.3, 0),
-      rotVel:  new THREE.Euler(Math.random() * 1.2, Math.random() * 1.2, Math.random() * 0.8),
+      vel:    new THREE.Vector3((Math.random() - 0.5) * 0.4, -0.3 - Math.random() * 0.3, 0),
+      rotVel: new THREE.Euler(Math.random() * 1.2, Math.random() * 1.2, Math.random() * 0.8),
       life:    Math.random() * maxLife,
       maxLife,
     });
@@ -93,7 +179,7 @@ export function buildIntroScene(scene: THREE.Scene, isMobile = false): IntroScen
   sun.position.set(-30, 45, 20);
   sun.castShadow = true;
   sun.shadow.mapSize.set(isMobile ? 1024 : 2048, isMobile ? 1024 : 2048);
-  sun.shadow.camera.left = -30; sun.shadow.camera.right  = 30;
+  sun.shadow.camera.left = -30; sun.shadow.camera.right  =  30;
   sun.shadow.camera.top  =  30; sun.shadow.camera.bottom = -30;
   sun.shadow.camera.near = 0.5; sun.shadow.camera.far    = 120;
   sun.shadow.bias = -0.0005;
@@ -133,32 +219,11 @@ export function buildIntroScene(scene: THREE.Scene, isMobile = false): IntroScen
     scene.add(edge);
   }
 
-  // Cây xanh
+  // ── Cây xanh tối ưu: load 1 lần, clone ──────────────────────────────────
   const loader = new GLTFLoader();
-  const fbxLoader = new FBXLoader();
-  const GREEN_MODELS = ["CommonTree_1", "CommonTree_2", "CommonTree_3", "CommonTree_4"];
-  const trees: THREE.Object3D[] = [];
-
-  for (let i = 0; i < TREE_PAIRS.length; i++) {
-    const { z } = TREE_PAIRS[i];
-    const model = GREEN_MODELS[i % GREEN_MODELS.length];
-    for (const sx of [-5.5, 5.5]) {
-      loader.load(`/model-tree/${model}.gltf`, (gltf) => {
-        const t = gltf.scene.clone();
-        t.position.set(sx, 0, z);
-        t.scale.setScalar(0.85 + (i % 3) * 0.12);
-        t.rotation.y = sx < 0 ? i * 0.7 : i * 1.1 + Math.PI;
-        t.traverse(o => {
-          if ((o as THREE.Mesh).isMesh) {
-            o.castShadow = true; o.receiveShadow = true;
-            (o as THREE.Mesh).frustumCulled = false;
-          }
-        });
-        scene.add(t);
-        trees.push(t);
-      });
-    }
-  }
+  const treePlacements = buildTreePlacements();
+  // Bắt đầu load cây (async ngầm, không block build scene)
+  loadAndPlaceTrees(loader, scene, treePlacements);
 
   // Cây đỏ cuối đường
   loader.load(`/model-tree/TwistedTree_1.gltf`, (gltf) => {
@@ -172,10 +237,9 @@ export function buildIntroScene(scene: THREE.Scene, isMobile = false): IntroScen
       }
     });
     scene.add(t);
-    trees.push(t);
   });
 
-  // Đèn lồng
+  // Đèn lồng 2 bên đường
   const lanternPositions = [
     { x: -2.2, z: 4 }, { x: 2.2, z: 4 },
     { x: -2.2, z: -4 }, { x: 2.2, z: -4 },
@@ -208,7 +272,7 @@ export function buildIntroScene(scene: THREE.Scene, isMobile = false): IntroScen
     scene.add(pl);
   }
 
-  // NPC — load model + fallback animation Sitting Idle
+  // ── NPC — đứng, không ngồi ──────────────────────────────────────────────
   let npcMixer: THREE.AnimationMixer | null = null;
 
   loader.load(`${PROXY}/model3.glb`, (gltf) => {
@@ -224,24 +288,15 @@ export function buildIntroScene(scene: THREE.Scene, isMobile = false): IntroScen
     });
     scene.add(npc);
 
-    npcMixer = new THREE.AnimationMixer(npc);
-
     console.log("NPC animations:", gltf.animations.length, gltf.animations.map(a => a.name));
 
     if (gltf.animations.length > 0) {
-      // Model có animation sẵn → dùng luôn
-      npcMixer.clipAction(gltf.animations[0]).play();
-    } else {
-      // Không có animation → load Sitting Idle từ FBX
-      fbxLoader.load("/animation/Sitting Idle.fbx", (fbx) => {
-        const clip = fbx.animations[0];
-        if (clip && npcMixer) {
-          // Lọc track chỉ giữ rotation, bỏ position root
-          const tracks = clip.tracks.filter(t => !t.name.toLowerCase().includes("hips.position"));
-          const cleanClip = new THREE.AnimationClip("SittingIdle", clip.duration, tracks);
-          npcMixer.clipAction(cleanClip).play();
-        }
-      });
+      npcMixer = new THREE.AnimationMixer(npc);
+      const clip = gltf.animations.find(a =>
+        !a.name.toLowerCase().includes("sit") &&
+        (a.name.toLowerCase().includes("idle") || a.name.toLowerCase().includes("stand"))
+      ) ?? gltf.animations.find(a => !a.name.toLowerCase().includes("sit")) ?? gltf.animations[0];
+      npcMixer.clipAction(clip).play();
     }
   },
   undefined,
@@ -257,9 +312,9 @@ export function buildIntroScene(scene: THREE.Scene, isMobile = false): IntroScen
   grad.addColorStop(1,   "rgba(255,100,0,0)");
   ctx.fillStyle = grad;
   ctx.beginPath(); ctx.arc(64, 64, 60, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#fff700";
-  ctx.font = "bold 80px Arial";
-  ctx.textAlign = "center";
+  ctx.fillStyle   = "#fff700";
+  ctx.font        = "bold 80px Arial";
+  ctx.textAlign   = "center";
   ctx.shadowColor = "#ff8800";
   ctx.shadowBlur  = 12;
   ctx.fillText("!", 64, 90);
@@ -272,14 +327,18 @@ export function buildIntroScene(scene: THREE.Scene, isMobile = false): IntroScen
   indicator.scale.set(0.8, 0.8, 1);
   scene.add(indicator);
 
-  // Leaf particles
+  // Leaf particles (bản cũ)
   const leaves = createLeafSystem(scene, isMobile ? 15 : 30);
 
   return {
     get npcMixer() { return npcMixer; },
 
     checkNPCProximity(playerPos: THREE.Vector3) {
-      return playerPos.distanceTo(NPC_POSITION) < 3.5;
+      // Dùng distanceToSquared thay distanceTo
+      const dx = playerPos.x - NPC_POSITION.x;
+      const dz = playerPos.z - NPC_POSITION.z;
+      const distSq = dx * dx + dz * dz;
+      return distSq < 3.5 * 3.5;
     },
 
     tick(dt: number, elapsed: number) {
@@ -300,15 +359,10 @@ export function buildIntroScene(scene: THREE.Scene, isMobile = false): IntroScen
 
       // Lá rơi
       tickLeaves(leaves, dt);
-
-      // Cây lắc nhẹ
-      for (const t of trees) {
-        t.rotation.z = Math.sin(elapsed * 0.8 + t.position.z * 0.3) * 0.015;
-      }
     },
   };
 }
 
 export function tickIntroScene(handles: IntroSceneHandles, dt: number, elapsed = 0) {
   handles.tick(dt, elapsed);
-        }
+}
