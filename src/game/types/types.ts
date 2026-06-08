@@ -15,14 +15,22 @@ export const COMBAT_ANIMS = new Set<AnimKey>([
   "pain", "death", "gettingUp",
 ]);
 
-// Combo chain: bấm attack khi đang attack → next move
+// ── Combo chain ───────────────────────────────────────────────────────────────
+// punch → uppercut → elbow → dropKick (chain tay)
+// kick  → sideKick → mmaKick          (chain chân)
+// Bấm attack khi đang attack → chạy move tiếp theo
 export const COMBO_CHAIN: Partial<Record<AnimKey, AnimKey>> = {
+  // Chain tay
   punch:    "uppercut",
   uppercut: "elbow",
+  elbow:    "dropKick",   // ← fix: elbow giờ có next
+
+  // Chain chân
   kick:     "sideKick",
   sideKick: "mmaKick",
-  mmaKick:  "dropKick",
-  death:    "gettingUp",
+  // mmaKick → end (không loop chain chân)
+
+  // Death không phải combo chain — handled riêng trong finished event
 };
 
 export interface InputState {
