@@ -8,6 +8,7 @@ import {
   CombatController,
   PlayerController,
   lerpAngle,
+  CameraIntro,
 } from "./controllers";
 
 import {
@@ -16,14 +17,7 @@ import {
   collisionManager,
 } from "./core";
 
-import { BaseScene } from "./scenes/BaseScene";
-import {
-  HubScene,
-  MainRoadScene,
-  LeftForestScene,
-  RightPlatformScene,
-  BossScene,
-} from "./scenes";
+import { WorldScene } from "./scenes/WorldScene";
 
 import { HUD, MobileUI, DialogueUI } from "./ui";
 
@@ -37,14 +31,6 @@ import {
 } from "./IntroScene";
 
 export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
-
-const SCENE_REGISTRY: Record<string, new () => BaseScene> = {
-  HubScene,
-  MainRoadScene,
-  LeftForestScene,
-  RightPlatformScene,
-  BossScene,
-};
 
 export class GameEngine {
   private container: HTMLElement;
@@ -81,11 +67,11 @@ export class GameEngine {
   private dialogue!: DialogueUI;
   private loadingOverlay: HTMLElement | null = null;
   private screenManager!: ScreenManager;
+  private cameraIntro!: CameraIntro;
 
-  private currentScene: BaseScene | null = null;
+  private currentScene: WorldScene | null = null;
   private introHandles: IntroSceneHandles | null = null;
   private npcTriggered = false;
-  private lastPortalTarget: string | null = null;
 
   private _camOff    = new THREE.Vector3();
   private _tgt       = new THREE.Vector3();
@@ -172,17 +158,19 @@ export class GameEngine {
       this.combatCtrl.camShake.addTrauma(0.3);
     });
 
-    eventBus.on(GameEvents.PORTAL_ENTERED, (data: { targetScene: string; spawnPos?: THREE.Vector3 }) => {
-      this.switchToScene(data.targetScene, data.spawnPos).catch(err => console.error(err));
-    });
-
     // Input
     this.playerCtrl.bindKeyboard();
     this.bindMouseAndResize();
 
-    // Start
+    // Load intro scene trước để có cảnh cho camera bay
     this.loadIntroScene();
     this.start();
+
+    // Bắt đầu cutscene intro
+    this.cameraIntro = new CameraIntro(this.camera, () => {
+      // Sau khi intro kết thúc, tự động chuyển vào thế giới chính
+      this.switchToWorld().catch(err => console.error(err));
+    });
   }
 
   public static async create(
@@ -194,45 +182,38 @@ export class GameEngine {
     return new GameEngine(container, character, model, clips);
   }
 
-  // ── Scene Management ────────────────────────────────────────────────────
+  // ── Chuyển vào thế giới chính (Map 1) ──────────────────────────────────
 
-  private async switchToScene(sceneName: string, spawnPos?: THREE.Vector3) {
-    this.showLoadingOverlay("Đang chuyển vùng...");
+  private async switchToWorld() {
+    this.showLoadingOverlay("Đang vào thế giới...");
     await new Promise(r => setTimeout(r, 60));
 
-    if (this.currentScene) {
-      this.currentScene.scene.remove(this.player);
-      await this.currentScene.unload();
-      this.currentScene = null;
+    // Dọn dẹp intro scene
+    if (this.introHandles) {
+      this.clearThreeScene(this.scene);
+      this.introHandles = null;
     }
-    this.introHandles = null;
-    collisionManager.clear();
-    this.clearThreeScene(this.scene);
+
     this.scene.remove(this.player);
 
-    const SceneClass = SCENE_REGISTRY[sceneName];
-    if (!SceneClass) {
+    // Tạo world scene
+    const worldScene = new WorldScene();
+    try {
+      await worldScene.load();
+    } catch (err) {
+      console.error("❌ Không load được WorldScene:", err);
       this.loadIntroScene();
       this.hideLoadingOverlay();
       return;
     }
 
-    const scene = new SceneClass();
-    try { await scene.load(); } catch (err) {
-      console.error(`❌ Không load được ${sceneName}:`, err);
-      this.loadIntroScene();
-      this.hideLoadingOverlay();
-      return;
-    }
-
-    scene.setPlayer(this.player);
-    scene.setCamera(this.camera);
-    scene.scene.add(this.player);
-    this.currentScene = scene;
+    worldScene.setPlayer(this.player);
+    worldScene.setCamera(this.camera);
+    worldScene.scene.add(this.player);
+    this.currentScene = worldScene;
     this.elapsed = 0;
     this.playerCtrl.setColliders([]);
-    this.player.position.copy(spawnPos || new THREE.Vector3(0, 0, 0));
-    this.lastPortalTarget = null;
+    this.player.position.set(0, 0, 30); // Vị trí spawn trong Hub
     this.combatCtrl.reset();
     this.hideLoadingOverlay();
   }
@@ -250,7 +231,6 @@ export class GameEngine {
     this.playerCtrl.setColliders([]);
     if (this.player?.position && PLAYER_SPAWN) this.player.position.copy(PLAYER_SPAWN);
     this.npcTriggered = false;
-    this.lastPortalTarget = null;
     this.elapsed = 0;
     this.combatCtrl.reset();
   }
@@ -261,7 +241,7 @@ export class GameEngine {
     toRemove.forEach(o => target.remove(o));
   }
 
-  // ── Loading Overlay ──────────────────────────────────────────────────────
+  // ── Loading Overlay ────────────────────────────────────────────────────
 
   private showLoadingOverlay(text = "Đang tải...") {
     if (this.loadingOverlay) return;
@@ -281,7 +261,7 @@ export class GameEngine {
     setTimeout(() => el.remove(), 300);
   }
 
-  // ── Placeholder ──────────────────────────────────────────────────────────
+  // ── Placeholder ────────────────────────────────────────────────────────
 
   private createPlaceholder(): THREE.Object3D {
     const group = new THREE.Group();
@@ -300,7 +280,7 @@ export class GameEngine {
     return group;
   }
 
-  // ── Mouse / Resize ───────────────────────────────────────────────────────
+  // ── Mouse / Resize / Pinch ─────────────────────────────────────────────
 
   private bindMouseAndResize() {
     this.renderer.domElement.addEventListener("mousedown", this.onMouseDown);
@@ -312,14 +292,14 @@ export class GameEngine {
   }
 
   private onMouseDown = (e: MouseEvent) => {
-    if (this.isMobile) return;
+    if (this.isMobile || this.cameraIntro?.isActive()) return;
     this.isRotating = true;
     this.lastMouse = { x: e.clientX, y: e.clientY };
     if (e.button === 0) this.combatCtrl.scheduleAttack("punch");
   };
   private onMouseUp = () => { this.isRotating = false; };
   private onMouseMove = (e: MouseEvent) => {
-    if (!this.isRotating || this.isMobile) return;
+    if (!this.isRotating || this.isMobile || this.cameraIntro?.isActive()) return;
     this.targetYaw   -= (e.clientX - this.lastMouse.x) * 0.005;
     this.targetPitch -= (e.clientY - this.lastMouse.y) * 0.005;
     this.targetPitch  = Math.max(-1.2, Math.min(0.3, this.targetPitch));
@@ -335,8 +315,6 @@ export class GameEngine {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
   };
-
-  // ── Pinch Zoom ───────────────────────────────────────────────────────────
 
   private pinchStartDist = 0;
   private pinchStartCamDist = 0;
@@ -357,7 +335,7 @@ export class GameEngine {
     }
   };
 
-  // ── Game Loop ────────────────────────────────────────────────────────────
+  // ── Game Loop ──────────────────────────────────────────────────────────
 
   private start() {
     if (this.isMobile) {
@@ -378,6 +356,14 @@ export class GameEngine {
   }
 
   private update(dt: number) {
+    // Camera intro đang chạy
+    if (this.cameraIntro?.isActive()) {
+      this.cameraIntro.tick(dt);
+      this.animCtrl.update(dt);
+      this.dialogue.update(dt);
+      return;
+    }
+
     this.elapsed += dt;
     const lk = 1 - Math.exp(-12 * dt);
     this.cameraYaw       = lerpAngle(this.cameraYaw, this.targetYaw, lk);
@@ -411,23 +397,9 @@ export class GameEngine {
     // Scene logic
     if (this.introHandles) {
       tickIntroScene(this.introHandles, dt, this.elapsed);
-      if (!this.npcTriggered && !locked && this.introHandles.checkNPCProximity(this.player.position)) {
-        this.npcTriggered = true;
-        this.dialogue.show(INTRO_NPC_DIALOGUE.npcName, INTRO_NPC_DIALOGUE.lines, () => {
-          this.switchToScene("HubScene", new THREE.Vector3(0, 0, 30)).catch(console.error);
-        });
-      }
+      // NPC dialogue trigger (nếu có)
     } else if (this.currentScene) {
       this.currentScene.update(dt);
-      if (!locked && !isAttacking) {
-        const target = this.currentScene.checkPortals(this.player.position);
-        if (target) {
-          if (target !== this.lastPortalTarget) {
-            this.lastPortalTarget = target;
-            eventBus.emit(GameEvents.PORTAL_ENTERED, { targetScene: target, spawnPos: this.player.position.clone() });
-          }
-        } else this.lastPortalTarget = null;
-      }
     }
 
     this.dialogue.update(dt);
@@ -449,7 +421,7 @@ export class GameEngine {
     this.hud.setCompassYaw(this.cameraYaw);
   }
 
-  // ── Public API ───────────────────────────────────────────────────────────
+  // ── Public API ─────────────────────────────────────────────────────────
 
   getScene()  { return this.scene; }
   getPlayer() { return this.player; }
@@ -476,4 +448,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-    }
+                                                        }
