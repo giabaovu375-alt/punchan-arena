@@ -127,7 +127,7 @@ export class BossScene extends BaseScene {
       [new THREE.Vector3(0, 0, -10)], // Đứng uy nghi ngay phía trên tâm map
       { 
         ...GOBLIN_CONFIG, 
-        scale: 12.0,       // To đột biến gấp 3 lần quái thường
+        scale: 7.0,       // To đột biến gấp 3 lần quái thường
         chaseRange: 50,    // Quét toàn bộ diện tích sàn đấu, không cho player chạy thoát
         patrolRadius: 0    // Không thèm đi tuần, thấy player là bổ củi luôn
       }
