@@ -21,8 +21,6 @@ import { WorldScene } from "./scenes/WorldScene";
 
 import { HUD, MobileUI, DialogueUI } from "./ui";
 
-import { INTRO_NPC_DIALOGUE } from "./dialogues";
-
 import {
   buildIntroScene,
   tickIntroScene,
@@ -69,9 +67,8 @@ export class GameEngine {
   private screenManager!: ScreenManager;
   private cameraIntro!: CameraIntro;
 
-  private currentScene: WorldScene | null = null;
+  private worldScene: WorldScene | null = null;
   private introHandles: IntroSceneHandles | null = null;
-  private npcTriggered = false;
 
   private _camOff    = new THREE.Vector3();
   private _tgt       = new THREE.Vector3();
@@ -118,7 +115,7 @@ export class GameEngine {
     this.combatCtrl = new CombatController(
       this.player, this.camera, this.container,
       (key) => this.animCtrl.triggerAttack(key),
-      () => this.currentScene?.getEnemyRoots() ?? [],
+      () => this.worldScene?.getEnemyRoots() ?? [],
     );
 
     this.playerCtrl = new PlayerController({
@@ -162,13 +159,12 @@ export class GameEngine {
     this.playerCtrl.bindKeyboard();
     this.bindMouseAndResize();
 
-    // Load intro scene trước để có cảnh cho camera bay
+    // Load intro scene và bắt đầu game loop
     this.loadIntroScene();
     this.start();
 
-    // Bắt đầu cutscene intro
+    // Bắt đầu cutscene intro, sau đó vào thế giới mở
     this.cameraIntro = new CameraIntro(this.camera, () => {
-      // Sau khi intro kết thúc, tự động chuyển vào thế giới chính
       this.switchToWorld().catch(err => console.error(err));
     });
   }
@@ -182,25 +178,20 @@ export class GameEngine {
     return new GameEngine(container, character, model, clips);
   }
 
-  // ── Chuyển vào thế giới chính (Map 1) ──────────────────────────────────
+  // ── Scene Management ────────────────────────────────────────────────────
 
   private async switchToWorld() {
     this.showLoadingOverlay("Đang vào thế giới...");
     await new Promise(r => setTimeout(r, 60));
 
-    // Dọn dẹp intro scene
     if (this.introHandles) {
       this.clearThreeScene(this.scene);
       this.introHandles = null;
     }
-
     this.scene.remove(this.player);
 
-    // Tạo world scene
     const worldScene = new WorldScene();
-    try {
-      await worldScene.load();
-    } catch (err) {
+    try { await worldScene.load(); } catch (err) {
       console.error("❌ Không load được WorldScene:", err);
       this.loadIntroScene();
       this.hideLoadingOverlay();
@@ -210,19 +201,19 @@ export class GameEngine {
     worldScene.setPlayer(this.player);
     worldScene.setCamera(this.camera);
     worldScene.scene.add(this.player);
-    this.currentScene = worldScene;
+    this.worldScene = worldScene;
     this.elapsed = 0;
     this.playerCtrl.setColliders([]);
-    this.player.position.set(0, 0, 30); // Vị trí spawn trong Hub
+    this.player.position.set(0, 0, 30);
     this.combatCtrl.reset();
     this.hideLoadingOverlay();
   }
 
   private loadIntroScene() {
-    if (this.currentScene) {
-      this.currentScene.scene.remove(this.player);
-      this.currentScene.unload().catch(err => console.error(err));
-      this.currentScene = null;
+    if (this.worldScene) {
+      this.worldScene.scene.remove(this.player);
+      this.worldScene.unload().catch(err => console.error(err));
+      this.worldScene = null;
     }
     collisionManager.clear();
     this.clearThreeScene(this.scene);
@@ -230,7 +221,6 @@ export class GameEngine {
     this.introHandles = buildIntroScene(this.scene, this.isMobile);
     this.playerCtrl.setColliders([]);
     if (this.player?.position && PLAYER_SPAWN) this.player.position.copy(PLAYER_SPAWN);
-    this.npcTriggered = false;
     this.elapsed = 0;
     this.combatCtrl.reset();
   }
@@ -348,7 +338,7 @@ export class GameEngine {
       this.timer.update();
       const dt = Math.min(this.timer.getDelta(), 0.05);
       this.update(dt);
-      const renderScene = this.currentScene ? this.currentScene.scene : this.scene;
+      const renderScene = this.worldScene ? this.worldScene.scene : this.scene;
       this.renderer.render(renderScene, this.camera);
       this.rafId = requestAnimationFrame(tick);
     };
@@ -356,7 +346,6 @@ export class GameEngine {
   }
 
   private update(dt: number) {
-    // Camera intro đang chạy
     if (this.cameraIntro?.isActive()) {
       this.cameraIntro.tick(dt);
       this.animCtrl.update(dt);
@@ -394,17 +383,14 @@ export class GameEngine {
       this.bodyParts.head.position.y = 1.75 + bob;
     }
 
-    // Scene logic
     if (this.introHandles) {
       tickIntroScene(this.introHandles, dt, this.elapsed);
-      // NPC dialogue trigger (nếu có)
-    } else if (this.currentScene) {
-      this.currentScene.update(dt);
+    } else if (this.worldScene) {
+      this.worldScene.update(dt);
     }
 
     this.dialogue.update(dt);
 
-    // Camera
     const camOff = this._camOff.set(
       Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch),
       -Math.sin(this.cameraPitch),
@@ -448,4 +434,4 @@ export class GameEngine {
     if (this.renderer.domElement.parentElement === this.container)
       this.container.removeChild(this.renderer.domElement);
   }
-                                                        }
+      }
