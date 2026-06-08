@@ -14,6 +14,7 @@ import { createLeafParticles, tickLeafParticles, type LeafParticleSystem } from 
 
 import { EnemyManager, GOBLIN_CONFIG } from "../entities/Enemy";
 
+// Hàm load asset chạy song song tối ưu hóa thời gian loading screen
 async function loadAllModels(loader: GLTFLoader): Promise<Map<string, THREE.Group>> {
   const cache = new Map<string, THREE.Group>();
   const unique = [...new Set(ALL_MODEL_NAMES)];
@@ -41,7 +42,7 @@ export class HubScene extends BaseScene {
   private playerRef:  THREE.Object3D | null = null;
   private cameraRef:  THREE.Camera   | null = null;
 
-  // FIX: flag để biết scene đã load xong chưa
+  // Cờ đánh dấu trạng thái nạp cảnh tĩnh
   private isLoaded = false;
 
   public scene: THREE.Scene;
@@ -51,21 +52,24 @@ export class HubScene extends BaseScene {
     this.scene = new THREE.Scene();
   }
 
-  // FIX: setPlayer/setCamera có thể gọi trước hoặc sau onLoad đều OK
+  // Nhận thực thể Player từ GameEngine bốc qua
   public setPlayer(player: THREE.Object3D) {
     this.playerRef = player;
     console.log("✅ HubScene: playerRef set");
   }
 
+  // Nhận Camera điều hướng từ GameEngine bốc qua
   public setCamera(camera: THREE.Camera) {
     this.cameraRef = camera;
     console.log("✅ HubScene: cameraRef set");
   }
 
+  // Trả về danh sách quái cho CombatController quét vùng đánh (Hitbox)
   public getEnemyRoots(): THREE.Object3D[] {
     return this.enemyManager?.getEnemyRoots() ?? [];
   }
 
+  // Lắng nghe sự kiện Player vung kiếm/đấm đá để xử lý trừ máu quái
   private onPlayerAttack = (data: {
     origin: THREE.Vector3;
     forward: THREE.Vector3;
@@ -75,6 +79,7 @@ export class HubScene extends BaseScene {
     this.enemyManager?.hitInRange(data.origin, data.range, data.damage);
   };
 
+  // Khởi tạo vòng đời nạp Asset của Map
   protected async onLoad(): Promise<void> {
     console.log("🌅 HubScene loading...");
     try {
@@ -87,6 +92,7 @@ export class HubScene extends BaseScene {
 
       this.enemyManager = new EnemyManager(this.scene, document.body);
 
+      // Spawn đống Goblin lính lác canh giữ tế đàn
       this.enemyManager.spawn(
         [
           new THREE.Vector3( 12, 0, 38),
@@ -99,7 +105,7 @@ export class HubScene extends BaseScene {
 
       eventBus.on(GameEvents.PLAYER_ATTACK, this.onPlayerAttack);
 
-      this.isLoaded = true; // FIX: đánh dấu load xong
+      this.isLoaded = true; // Đánh dấu hoàn tất
       console.log("✅ HubScene loaded!");
       eventBus.emit(GameEvents.SCENE_LOADED, { sceneName: "HubScene" });
     } catch (error) {
@@ -108,6 +114,7 @@ export class HubScene extends BaseScene {
     }
   }
 
+  // Dọn dẹp bộ nhớ khi chuyển đổi Map để tránh tràn RAM (Memory Leak)
   protected async onUnload(): Promise<void> {
     console.log("🌅 HubScene unloading...");
     this.isLoaded = false;
@@ -120,20 +127,25 @@ export class HubScene extends BaseScene {
     this.particleSystem = null;
   }
 
+  // Vòng lặp logic nội tại của riêng Hub Map
   protected onUpdate(deltaTime: number): void {
-    // FIX: guard đầy đủ — không update nếu chưa load xong hoặc thiếu ref
-    if (!this.isLoaded) return;
+    // TỐI ƯU CỐT LÕI: Guard clause chặn đứng hoàn toàn việc chạy logic quái/hiệu ứng 
+    // khi data hoặc liên kết nhân vật chưa sẵn sàng. Chống lỗi crash "cannot read property of undefined".
+    if (!this.isLoaded || !this.playerRef || !this.cameraRef) return;
 
     this.elapsed += deltaTime;
 
+    // Xoay vòng các Gate Portal cho đẹp mắt
     for (const marker of this.portalMarkers) {
       if (marker.mesh.children[0])
         marker.mesh.children[0].rotation.z += deltaTime * 0.3;
     }
 
+    // Cập nhật hệ thống hạt (lá rơi quanh cây đại thụ)
     if (this.particleSystem) tickLeafParticles(this.particleSystem, deltaTime);
 
-    if (this.enemyManager && this.playerRef && this.cameraRef) {
+    // Xử lý AI quái dí theo và tẩn Player
+    if (this.enemyManager) {
       const totalDmg = this.enemyManager.update(
         deltaTime,
         this.playerRef.position,
@@ -142,9 +154,6 @@ export class HubScene extends BaseScene {
       if (totalDmg > 0) {
         eventBus.emit(GameEvents.PLAYER_DAMAGE, { amount: totalDmg });
       }
-    } else if (!this.playerRef || !this.cameraRef) {
-      // FIX: cảnh báo nếu quên gọi setPlayer/setCamera
-      console.warn("⚠️ HubScene: thiếu playerRef hoặc cameraRef — gọi setPlayer() và setCamera() trước!");
     }
   }
 
@@ -152,6 +161,7 @@ export class HubScene extends BaseScene {
     this.onUpdate(deltaTime);
   }
 
+  // Kiểm tra xem tọa độ của Player có đang đè lên vùng Gate Portal nào không
   public checkPortals(playerPos: THREE.Vector3): string | null {
     if (!this.portalMarkers.length) return null;
     for (const marker of this.portalMarkers) {
