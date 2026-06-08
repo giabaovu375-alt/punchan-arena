@@ -1,19 +1,25 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { BaseScene } from "./BaseScene";
 import { eventBus } from "../core/EventBus";
 import { GameEvents } from "../types/events";
-import { EnemyManager, GOBLIN_CONFIG } from "../entities/Enemy";
-import { loadAllModels, generateScatter, buildInstancedGroup } from "./hub/HubEnvironment"; // Tái sử dụng helper
-import { setupPortals } from "./hub/HubPortal";
-import { createLeafParticles, tickLeafParticles } from "./hub/HubParticles";
 import { collisionManager } from "../core/CollisionManager";
+import { EnemyManager, GOBLIN_CONFIG } from "../entities/Enemy";
+import { setupLighting } from "./hub/HubLighting"; // Dùng chung ánh sáng
+
+// Tái sử dụng các helper build từ HubEnvironment
+import { loadAllModels, generateScatter, buildInstancedGroup } from "./hub/HubEnvironment";
+// Tái sử dụng portal
+import { setupPortals, createPortalMesh } from "./hub/HubPortal";
+// Tái sử dụng particles
+import { createLeafParticles, tickLeafParticles } from "./hub/HubParticles";
 
 export class WorldScene extends BaseScene {
   private enemyManager!: EnemyManager;
   private playerRef!: THREE.Object3D;
   private cameraRef!: THREE.Camera;
   private elapsed = 0;
-  private particleSystems: any[] = [];
+  private portalMeshes: any[] = [];
 
   public scene: THREE.Scene;
 
@@ -27,204 +33,148 @@ export class WorldScene extends BaseScene {
   public getEnemyRoots(): THREE.Object3D[] { return this.enemyManager?.getEnemyRoots() ?? []; }
 
   protected async onLoad(): Promise<void> {
-    // ── 1. ÁNH SÁNG CHUNG (Hoàng hôn nhẹ) ─────────────────────────────
-    this.scene.background = new THREE.Color(0x2d1b2e);
-    this.scene.fog = new THREE.FogExp2(0x2d1b2e, 0.01); // fog xa hơn để thấy toàn cảnh
+    console.log("🌍 Đang kiến tạo thế giới AAA...");
 
-    // Mặt trời chính
-    const sun = new THREE.DirectionalLight(0xff9966, 1.2);
-    sun.position.set(100, 150, 100);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -150; sun.shadow.camera.right = 150;
-    sun.shadow.camera.top = 150; sun.shadow.camera.bottom = -150;
-    sun.shadow.camera.far = 500;
-    this.scene.add(sun);
-    this.scene.add(new THREE.AmbientLight(0x443322, 0.5));
+    // ── 1. Ánh Sáng và Không Gian ───────────────────────────────────────
+    setupLighting(this.scene); // Tái sử dụng HubLighting
 
-    // ── 2. LOAD MODELS ─────────────────────────────────────────────────
-    const loader = new THREE.GLTFLoader();
+    // ── 2. Load toàn bộ Model ───────────────────────────────────────────
+    const loader = new GLTFLoader();
     const modelCache = await loadAllModels(loader);
+    const enableShadows = (model: THREE.Group) => {
+      model.traverse((child) => { if ((child as THREE.Mesh).isMesh) { child.castShadow = true; child.receiveShadow = true; } });
+    };
 
-    // ── 3. DỰNG TỪNG KHU VỰC ───────────────────────────────────────────
-    // Mỗi khu vực được bọc trong một Group để dễ di chuyển
-    this.buildHub(modelCache);
-    this.buildMainRoad(modelCache);
-    this.buildLeftForest(modelCache);
-    this.buildRightPlatform(modelCache);
-    this.buildBossArena(modelCache);
+    // ── 3. Dựng từng khu vực ────────────────────────────────────────────
+    await this.buildHub(modelCache);
+    await this.buildMainRoad(modelCache, loader);
+    await this.buildLeftForest(modelCache, loader);
+    await this.buildRightPlatform(modelCache, loader);
+    await this.buildBossArena(modelCache, loader);
 
-    // ── 4. QUÁI VẬT ────────────────────────────────────────────────────
+    // ── 4. Spawn Quái Vật ───────────────────────────────────────────────
     this.enemyManager = new EnemyManager(this.scene, document.body);
     this.spawnEnemies();
 
-    // ── 5. HIỆU ỨNG ────────────────────────────────────────────────────
+    // ── 5. Hiệu ứng Chung ───────────────────────────────────────────────
     const leaves = createLeafParticles(this.scene, 100);
-    this.particleSystems.push(leaves);
 
-    console.log("✅ WorldScene (Map 1) loaded!");
+    console.log("✅ Thế giới AAA đã sẵn sàng!");
     eventBus.emit(GameEvents.SCENE_LOADED, { sceneName: "WorldScene" });
   }
 
-  // ── BUILDERS CHO TỪNG KHU ──────────────────────────────────────────────
+  // ── CÁC HÀM XÂY DỰNG KHU VỰC ──────────────────────────────────────────
 
-  private buildHub(cache: Map<string, THREE.Group>) {
-    const hubGroup = new THREE.Group();
-    hubGroup.position.set(0, 0, 0);
+  private async buildHub(cache: Map<string, THREE.Group>) {
+    // Khu trung tâm: Copy từ HubScene
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(80, 64), new THREE.MeshStandardMaterial({ color: 0x3d2b1f, roughness: 0.95, flatShading: true }));
+    ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; this.scene.add(ground);
 
-    // Mặt đất
-    const ground = new THREE.Mesh(
-      new THREE.CircleGeometry(80, 64),
-      new THREE.MeshStandardMaterial({ color: 0x3d2b1f, roughness: 1, flatShading: true })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    hubGroup.add(ground);
+    const pathMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 1 });
+    const pathH = new THREE.Mesh(new THREE.PlaneGeometry(90, 3.5), pathMat); pathH.rotation.x = -Math.PI / 2; pathH.position.set(0, 0.01, 0); pathH.receiveShadow = true; this.scene.add(pathH);
+    const pathV = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 100), pathMat); pathV.rotation.x = -Math.PI / 2; pathV.position.set(0, 0.01, 10); pathV.receiveShadow = true; this.scene.add(pathV);
 
-    // Cây cối (dùng helper từ HubEnvironment)
-    // Cậu tự điều chỉnh vị trí scatter để khớp với hub
-    const items = generateScatter(["TwistedTree_1", "CommonTree_1"], 20, 5, 70, [1, 2]);
-    buildInstancedGroup(cache, items, true, true, 1.0);
+    // Cây cối (dùng lại code của cậu)
+    const outerScatter = generateScatter(["CommonTree_1", "CommonTree_2", "CommonTree_3", "Pine_1", "Pine_2"], 20, 40, 68, [1.2, 2.0], 100);
+    const midScatter = generateScatter(["DeadTree_1", "DeadTree_2", "CommonTree_1"], 10, 18, 38, [1.0, 1.6], 200);
+    const groundScatter = generateScatter(["Bush_Common", "Fern_1", "Mushroom_Laetiporus", "Plant_1", "Rock_Medium_1"], 25, 6, 55, [0.5, 1.2], 400);
+    buildInstancedGroup(cache, outerScatter, "CommonTree_1", true, true, 1.0, this.scene);
+    buildInstancedGroup(cache, midScatter, "DeadTree_1", true, true, 0.8, this.scene);
+    buildInstancedGroup(cache, groundScatter, "Bush_Common", false, false, 0, this.scene);
 
-    this.scene.add(hubGroup);
+    // Cây đỏ trung tâm
+    const twistedScatter = [{ modelName: "TwistedTree_1", x: 0, z: 0, scale: 5.0, rotY: Math.PI * 0.15 }];
+    buildInstancedGroup(cache, twistedScatter, "TwistedTree_1", true, true, 3.0, this.scene);
+
+    // Portal đi các vùng
+    const portalDefs = [
+      { targetScene: "MainRoad", pos: new THREE.Vector3(0, 0, 60), color: 0x00aaff, label: "Đường Chính" },
+      { targetScene: "LeftForest", pos: new THREE.Vector3(-60, 0, 0), color: 0x00ff88, label: "Rừng Mật" },
+      { targetScene: "RightPlatform", pos: new THREE.Vector3(60, 0, 0), color: 0xffaa00, label: "Khu Đá" },
+      { targetScene: "BossArena", pos: new THREE.Vector3(0, 0, -60), color: 0xff2200, label: "Boss" },
+    ];
+    this.portalMeshes = setupPortals(this.scene, portalDefs); // Hàm setupPortals cần được sửa để nhận mảng portal
   }
 
-  private buildMainRoad(cache: Map<string, THREE.Group>) {
-    const roadGroup = new THREE.Group();
-    roadGroup.position.set(0, 0, -200); // Nằm phía Nam Hub
-
-    // Mặt đất xanh
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(100, 400),
-      new THREE.MeshStandardMaterial({ color: 0x4a7c3f, roughness: 0.9 })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    roadGroup.add(ground);
+  private async buildMainRoad(cache: Map<string, THREE.Group>, loader: GLTFLoader) {
+    // Dịch chuyển toàn bộ MainRoad về phía Nam (z: 200)
+    const offset = new THREE.Vector3(0, 0, 200);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 300), new THREE.MeshStandardMaterial({ color: 0x4a7c3f, roughness: 0.9, flatShading: true }));
+    ground.position.copy(offset); ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; this.scene.add(ground);
 
     // Đường đi
-    const path = new THREE.Mesh(
-      new THREE.PlaneGeometry(6, 400),
-      new THREE.MeshStandardMaterial({ color: 0x8B7355 })
-    );
-    path.rotation.x = -Math.PI / 2;
-    path.position.y = 0.01;
-    roadGroup.add(path);
+    const road = new THREE.Mesh(new THREE.PlaneGeometry(6, 300), new THREE.MeshStandardMaterial({ color: 0x8B7355 }));
+    road.position.copy(offset.clone().add(new THREE.Vector3(0, 0.01, 0))); road.rotation.x = -Math.PI / 2; this.scene.add(road);
 
-    // Hàng rào, cột đèn... (cậu tự thêm)
-
-    this.scene.add(roadGroup);
+    // Hàng rào và nhà (load và clone)
+    const fenceUrl = "/model/stylized fence.glb";
+    loader.load(fenceUrl, (gltf) => {
+      const master = gltf.scene; enableShadows(master);
+      for (let z = -140; z <= 140; z += 10) {
+        for (const sx of [-3.2, 3.2]) {
+          const clone = master.clone();
+          clone.position.copy(offset.clone().add(new THREE.Vector3(sx, 0, z)));
+          this.scene.add(clone);
+        }
+      }
+    });
+    // Tương tự cho nhà và đèn...
   }
 
-  private buildLeftForest(cache: Map<string, THREE.Group>) {
-    const forestGroup = new THREE.Group();
-    forestGroup.position.set(-120, 0, 0); // Nằm phía Tây Hub
+  private async buildLeftForest(cache: Map<string, THREE.Group>, loader: GLTFLoader) {
+    const offset = new THREE.Vector3(-200, 0, 0);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(150, 150), new THREE.MeshStandardMaterial({ color: 0x2d3a1f, roughness: 1, flatShading: true }));
+    ground.position.copy(offset); ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; this.scene.add(ground);
 
-    // Mặt đất tối
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(150, 150),
-      new THREE.MeshStandardMaterial({ color: 0x2d3a1f, roughness: 1 })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    forestGroup.add(ground);
-
-    // Cây rừng, bụi rậm...
-    // (cậu tự thêm)
-
-    // Ánh sáng cục bộ (tối hơn)
-    const forestLight = new THREE.AmbientLight(0x224422, 0.3);
-    forestGroup.add(forestLight);
-
-    this.scene.add(forestGroup);
+    // Bụi cây
+    loader.load("/model/bush.glb", (gltf) => {
+      const master = gltf.scene; enableShadows(master);
+      for (let i = 0; i < 15; i++) {
+        const clone = master.clone();
+        clone.position.copy(offset.clone().add(new THREE.Vector3((Math.random() - 0.5) * 100, 0, (Math.random() - 0.5) * 100)));
+        clone.rotation.y = Math.random() * Math.PI * 2;
+        this.scene.add(clone);
+      }
+    });
   }
 
-  private buildRightPlatform(cache: Map<string, THREE.Group>) {
-    const platformGroup = new THREE.Group();
-    platformGroup.position.set(120, 0, 0); // Nằm phía Đông Hub
+  private async buildRightPlatform(cache: Map<string, THREE.Group>, loader: GLTFLoader) {
+    const offset = new THREE.Vector3(200, 0, 0);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(150, 150), new THREE.MeshStandardMaterial({ color: 0x6b5a4a, roughness: 1, flatShading: true }));
+    ground.position.copy(offset); ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; this.scene.add(ground);
 
-    // Mặt đất đá
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(150, 150),
-      new THREE.MeshStandardMaterial({ color: 0x6b5a4a, roughness: 1 })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    platformGroup.add(ground);
-
-    // Cột đá, tinh thể...
-    // (cậu tự thêm)
-
-    this.scene.add(platformGroup);
+    // Tinh thể
+    loader.load("/model/crystal hong.glb", (gltf) => {
+      const crystal = gltf.scene; enableShadows(crystal);
+      crystal.position.copy(offset.clone().add(new THREE.Vector3(20, 0, -20)));
+      this.scene.add(crystal);
+    });
   }
 
-  private buildBossArena(cache: Map<string, THREE.Group>) {
-    const arenaGroup = new THREE.Group();
-    arenaGroup.position.set(0, 0, 200); // Nằm phía Bắc Hub
+  private async buildBossArena(cache: Map<string, THREE.Group>, loader: GLTFLoader) {
+    const offset = new THREE.Vector3(0, 0, -300);
+    const arena = new THREE.Mesh(new THREE.CircleGeometry(40, 64), new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.7, metalness: 0.3 }));
+    arena.position.copy(offset); arena.rotation.x = -Math.PI / 2; arena.receiveShadow = true; this.scene.add(arena);
 
-    // Sàn đấu
-    const arena = new THREE.Mesh(
-      new THREE.CircleGeometry(50, 64),
-      new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.5, metalness: 0.5 })
-    );
-    arena.rotation.x = -Math.PI / 2;
-    arena.receiveShadow = true;
-    arenaGroup.add(arena);
-
-    // Cột lửa xung quanh
-    for (let i = 0; i < 8; i++) {
-      const angle = (i / 8) * Math.PI * 2;
-      const x = Math.cos(angle) * 45;
-      const z = Math.sin(angle) * 45;
-      const pillar = new THREE.Mesh(
-        new THREE.CylinderGeometry(1, 1.2, 5, 8),
-        new THREE.MeshStandardMaterial({ color: 0x444444 })
-      );
-      pillar.position.set(x, 2.5, z);
-      pillar.castShadow = true;
-      arenaGroup.add(pillar);
-
-      const fire = new THREE.PointLight(0xff4400, 1, 15);
-      fire.position.set(x, 5, z);
-      arenaGroup.add(fire);
-    }
-
-    // Ánh sáng rực lửa
-    const fireLight = new THREE.PointLight(0xff4400, 2, 60);
-    fireLight.position.set(0, 5, 0);
-    arenaGroup.add(fireLight);
-
-    this.scene.add(arenaGroup);
+    // Cầu dây nối Hub và Arena
+    loader.load("/model/old_ropebridge_low_poly.glb", (gltf) => {
+      const bridge = gltf.scene; enableShadows(bridge);
+      bridge.position.copy(offset.clone().add(new THREE.Vector3(0, 0, -40)));
+      this.scene.add(bridge);
+    });
   }
 
   // ── SPAWN ENEMIES ──────────────────────────────────────────────────────
 
   private spawnEnemies() {
-    // Goblin trong Hub
-    this.enemyManager.spawn(
-      [new THREE.Vector3(10, 0, 10), new THREE.Vector3(-10, 0, -10)],
-      { ...GOBLIN_CONFIG, scale: 4, chaseRange: 15 }
-    );
-    // Goblin trên đường chính
-    this.enemyManager.spawn(
-      [new THREE.Vector3(0, 0, -250), new THREE.Vector3(5, 0, -150)],
-      { ...GOBLIN_CONFIG, scale: 4, chaseRange: 20 }
-    );
-    // Goblin trong rừng
-    this.enemyManager.spawn(
-      [new THREE.Vector3(-130, 0, 20), new THREE.Vector3(-110, 0, -20)],
-      { ...GOBLIN_CONFIG, scale: 4.5, chaseRange: 18 }
-    );
-    // Goblin khu đá
-    this.enemyManager.spawn(
-      [new THREE.Vector3(110, 0, 30), new THREE.Vector3(130, 0, -30)],
-      { ...GOBLIN_CONFIG, scale: 4, chaseRange: 18 }
-    );
-    // Boss trong đấu trường
-    this.enemyManager.spawn(
-      [new THREE.Vector3(0, 0, 200)],
-      { ...GOBLIN_CONFIG, scale: 12, maxHp: 500, chaseRange: 50, attackDamage: 25 }
-    );
+    // Hub
+    this.enemyManager.spawn([new THREE.Vector3(10, 0, 10)], { ...GOBLIN_CONFIG, scale: 4 });
+    // MainRoad
+    this.enemyManager.spawn([new THREE.Vector3(0, 0, 250), new THREE.Vector3(5, 0, 150)], { ...GOBLIN_CONFIG, scale: 4, chaseRange: 20 });
+    // LeftForest
+    this.enemyManager.spawn([new THREE.Vector3(-210, 0, 20)], { ...GOBLIN_CONFIG, scale: 4.5, chaseRange: 18 });
+    // Boss
+    this.enemyManager.spawn([new THREE.Vector3(0, 0, -300)], { ...GOBLIN_CONFIG, scale: 12, maxHp: 500, chaseRange: 50, attackDamage: 25 });
   }
 
   // ── UPDATE ─────────────────────────────────────────────────────────────
@@ -236,9 +186,9 @@ export class WorldScene extends BaseScene {
       const dmg = this.enemyManager.update(dt, this.playerRef.position, this.cameraRef);
       if (dmg > 0) eventBus.emit(GameEvents.PLAYER_DAMAGE, { amount: dmg });
     }
-    // Cập nhật hiệu ứng
-    for (const sys of this.particleSystems) {
-      tickLeafParticles(sys, dt);
+    // Xoay portal
+    for (const p of this.portalMeshes) {
+      if (p.mesh.children[0]) p.mesh.children[0].rotation.z += dt * 0.3;
     }
   }
 
@@ -249,6 +199,5 @@ export class WorldScene extends BaseScene {
 
   public update(dt: number): void { this.onUpdate(dt); }
 
-  // Không còn portal nữa
-  public checkPortals(): null { return null; }
-      }
+  public checkPortals(): null { return null; } // Không dùng portal để chuyển vùng nữa
+}
