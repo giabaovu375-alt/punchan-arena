@@ -31,6 +31,7 @@ export class MainRoadScene extends BaseScene {
 
     const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
     this.scene.add(hemi);
+    
     const sun = new THREE.DirectionalLight(0xffffff, 1.2);
     sun.position.set(50, 80, 50);
     sun.castShadow = true;
@@ -56,48 +57,65 @@ export class MainRoadScene extends BaseScene {
     road.receiveShadow = true;
     this.scene.add(road);
 
-    // Hàng rào gỗ 2 bên
-    const fenceLoader = new GLTFLoader();
-    for (let z = -140; z <= 140; z += 10) {
-      for (const sx of [-3.2, 3.2]) {
-        fenceLoader.load("/model/stylized fence.glb", (gltf) => {
-          const fence = gltf.scene;
-          fence.position.set(sx, 0, z);
-          fence.scale.setScalar(0.8);
-          this.scene.add(fence);
-        });
-      }
-    }
+    // Khởi tạo loader dùng chung
+    const gltfLoader = new GLTFLoader();
 
-    // Cột đèn
-    const lampLoader = new GLTFLoader();
-    for (let z = -120; z <= 120; z += 25) {
-      lampLoader.load("/model/low_poly_lamp_post.glb", (gltf) => {
-        const lamp = gltf.scene;
-        lamp.position.set(3.5, 0, z);
-        lamp.scale.setScalar(0.6);
-        this.scene.add(lamp);
+    // 1. Tối ưu load Hàng rào gỗ (Load 1 lần, nhân bản bằng .clone())
+    gltfLoader.load("/model/stylized fence.glb", (gltf) => {
+      const masterFence = gltf.scene;
+      
+      // Bật thuộc tính shadow sẵn cho master trước khi clone
+      masterFence.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
       });
-    }
 
-    // Nhà ven đường
-    const houseLoader = new GLTFLoader();
-    houseLoader.load("/model/stylized medieval_house.glb", (gltf) => {
+      for (let z = -140; z <= 140; z += 10) {
+        for (const sx of [-3.2, 3.2]) {
+          const fenceClone = masterFence.clone();
+          fenceClone.position.set(sx, 0, z);
+          fenceClone.scale.setScalar(0.8);
+          this.scene.add(fenceClone);
+        }
+      }
+    });
+
+    // 2. Tối ưu load Cột đèn (Load 1 lần, clone nhiều lần)
+    gltfLoader.load("/model/low_poly_lamp_post.glb", (gltf) => {
+      const masterLamp = gltf.scene;
+      masterLamp.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+
+      for (let z = -120; z <= 120; z += 25) {
+        const lampClone = masterLamp.clone();
+        lampClone.position.set(3.5, 0, z);
+        lampClone.scale.setScalar(0.6);
+        this.scene.add(lampClone);
+      }
+    });
+
+    // 3. Nhà ven đường & Xe ngựa (Load độc lập)
+    gltfLoader.load("/model/stylized medieval_house.glb", (gltf) => {
       const house = gltf.scene;
       house.position.set(-12, 0, -100);
       house.scale.setScalar(2.0);
       this.scene.add(house);
     });
-    houseLoader.load("/model/stylized medieval_house 2.glb", (gltf) => {
+    
+    gltfLoader.load("/model/stylized medieval_house 2.glb", (gltf) => {
       const house = gltf.scene;
       house.position.set(12, 0, 80);
       house.scale.setScalar(2.0);
       this.scene.add(house);
     });
 
-    // Xe ngựa
-    const wagonLoader = new GLTFLoader();
-    wagonLoader.load("/model/stylized wooden_wagon.glb", (gltf) => {
+    gltfLoader.load("/model/stylized wooden_wagon.glb", (gltf) => {
       const wagon = gltf.scene;
       wagon.position.set(-5, 0, -50);
       wagon.scale.setScalar(1.5);
