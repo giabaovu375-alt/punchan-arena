@@ -23,14 +23,19 @@ export class AnimationController {
   private currentKey: AnimKey = "idle";
   private fallbackAnimKey: AnimKey | null = null;
 
-  private isAttacking = false;
+  // ── Attack state ──────────────────────────────────────────────────────────
+  private isAttacking    = false;
   private attackCooldown = 0;
-  private attackLockTimer = 0;
+  // Bỏ attackLockTimer cứng — dùng "finished" event để unlock
 
-  private comboCount = 0;
-  private comboTimer = 0;
+  // ── Combo ─────────────────────────────────────────────────────────────────
+  private comboCount      = 0;
+  private comboTimer      = 0;
+  private pendingCombo: AnimKey | null = null; // input buffered khi đang attack
 
   constructor(private cb: AnimationControllerCallbacks) {}
+
+  // ── Setup ──────────────────────────────────────────────────────────────────
 
   setupModel(rig: THREE.Object3D, model: THREE.Group, clips: AnimClipMap): SetupResult {
     model.traverse((child) => {
@@ -38,34 +43,22 @@ export class AnimationController {
         const mesh = child as THREE.Mesh;
         mesh.castShadow    = true;
         mesh.receiveShadow = true;
-        mesh.frustumCulled = false; // tránh bị cull khi camera xoay
+        mesh.frustumCulled = false;
 
-        // ── Nâng chất lượng material ─────────────────────────────────────
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         mats.forEach((mat) => {
           if (!(mat instanceof THREE.MeshStandardMaterial)) return;
-
-          // Texture encoding chuẩn sRGB
           if (mat.map) {
             mat.map.colorSpace = THREE.SRGBColorSpace;
-            mat.map.anisotropy = 8; // nét hơn khi nhìn góc nghiêng
+            mat.map.anisotropy = 8;
             mat.map.needsUpdate = true;
           }
-          if (mat.normalMap) {
-            mat.normalMap.anisotropy = 8;
-          }
-          if (mat.emissiveMap) {
-            mat.emissiveMap.colorSpace = THREE.SRGBColorSpace;
-          }
-
-          // Vật liệu trông thật hơn
-          mat.roughness  = Math.min(mat.roughness  ?? 0.8, 0.85);
-          mat.metalness  = Math.min(mat.metalness  ?? 0.0, 0.25);
-          mat.envMapIntensity = 1.2; // phản chiếu môi trường rõ hơn
-
-          // Tắt side double – nhẹ hơn, đúng hơn với skinned mesh
+          if (mat.normalMap) mat.normalMap.anisotropy = 8;
+          if (mat.emissiveMap) mat.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+          mat.roughness       = Math.min(mat.roughness  ?? 0.8, 0.85);
+          mat.metalness       = Math.min(mat.metalness  ?? 0.0, 0.25);
+          mat.envMapIntensity = 1.2;
           if (mat.side === THREE.DoubleSide) mat.side = THREE.FrontSide;
-
           mat.needsUpdate = true;
         });
       }
@@ -73,7 +66,6 @@ export class AnimationController {
 
     model.scale.setScalar(1);
 
-    // Tính bounding box để lấy footOffset + playerHeight
     const tempScene = new THREE.Scene();
     model.position.set(0, 0, 0);
     model.rotation.set(0, 0, 0);
@@ -92,7 +84,7 @@ export class AnimationController {
     rig.add(model);
     model.updateMatrixWorld(true);
 
-    // ── Mixer + clips ────────────────────────────────────────────────────
+    // ── Mixer + clips ────────────────────────────────────────────────────────
     this.mixer = new THREE.AnimationMixer(model);
 
     const nodeNames = new Set<string>();
@@ -134,24 +126,37 @@ export class AnimationController {
         action.setLoop(THREE.LoopOnce, 1);
         action.clampWhenFinished = true;
       }
-      this.actions[key] = action;
+      this.actions[key]    = action;
       this.actionToKey.set(action, key);
       if (!this.fallbackAnimKey) this.fallbackAnimKey = key;
     }
 
-    // Sự kiện kết thúc animation
+    // ── finished event — đây là nơi DUY NHẤT unlock isAttacking ─────────────
     this.mixer.addEventListener("finished", (e: any) => {
       const doneKey = this.actionToKey.get(e.action);
       if (!doneKey) return;
 
-      if (doneKey === "death" && this.actions.gettingUp) {
-        this.currentAction = null;
-        this.playAnim("gettingUp", 0);
+      if (doneKey === "death") {
+        this.playAnim("gettingUp", 0.1);
         return;
       }
+
       if (COMBAT_ANIMS.has(doneKey) || doneKey === "jump") {
-        this.isAttacking   = false;
-        this.attackCooldown = 0.3;
+        // Có combo được buffer không?
+        if (this.pendingCombo) {
+          const next = this.pendingCombo;
+          this.pendingCombo  = null;
+          this.isAttacking   = true;
+          this.attackCooldown = 0;
+          this._playAttack(next);
+          return;
+        }
+
+        // Không có pending → unlock hoàn toàn
+        this.isAttacking    = false;
+        this.attackCooldown = 0.2;
+        this.comboCount     = 0;
+        this.cb.onComboChanged?.(0);
         this.currentAction  = null;
         this.playAnim(this.cb.isMoving() ? "walk" : "idle", 0.15);
       }
@@ -172,13 +177,14 @@ export class AnimationController {
       this.currentKey    = startKey;
     }
 
-    // Warm up
     this.mixer.update(0);
     this.mixer.update(0.001);
     this.mixer.update(0.001);
 
     return { modelRoot: model, playerHeight, footOffset };
   }
+
+  // ── playAnim ───────────────────────────────────────────────────────────────
 
   playAnim(key: AnimKey, fade = 0.15) {
     if (!this.mixer) return;
@@ -187,11 +193,10 @@ export class AnimationController {
     if (!next) return;
     if (this.currentAction === next && next.isRunning()) return;
 
-    const prev = this.currentAction;
+    const prev = this.currentAction; // KHÔNG set null trước khi gọi
 
     if (prev && prev !== next && fade > 0) {
-      const needReset = COMBAT_ANIMS.has(key) || key === "jump";
-      if (needReset) next.reset();
+      if (COMBAT_ANIMS.has(key) || key === "jump") next.reset();
       next.enabled = true;
       next.setEffectiveWeight(1);
       next.setEffectiveTimeScale(1);
@@ -213,38 +218,58 @@ export class AnimationController {
     this.currentKey    = key;
   }
 
+  // ── triggerAttack ──────────────────────────────────────────────────────────
+
   triggerAttack(key: AnimKey) {
+    if (this.attackCooldown > 0) return;
+
     if (this.isAttacking) {
-      const combo = COMBO_CHAIN[this.currentKey];
-      if (combo && this.actions[combo]) {
-        this.currentAction = null;
-        this.playAnim(combo, 0);
-        this.currentKey = combo;
+      // Buffer combo — chỉ lưu 1 input, không spam
+      const next = COMBO_CHAIN[this.currentKey];
+      if (next && this.actions[next]) {
+        this.pendingCombo = next;
       }
       return;
     }
-    if (this.attackCooldown > 0) return;
 
-    this.isAttacking      = true;
-    this.attackCooldown   = 0.6;
-    this.attackLockTimer  = 0.8;
-    this.playAnim(key, 0.1);
+    this.isAttacking    = true;
+    this.pendingCombo   = null;
+    this._playAttack(key);
 
     this.comboCount = Math.min(this.comboCount + 1, 999);
-    this.comboTimer = 1.6;
+    this.comboTimer = 2.0;
     this.cb.onComboChanged?.(this.comboCount);
   }
 
-  update(dt: number): { isAttacking: boolean } {
-    if (this.attackCooldown  > 0) this.attackCooldown  -= dt;
-    if (this.attackLockTimer > 0) {
-      this.attackLockTimer -= dt;
-      if (this.attackLockTimer <= 0) {
-        this.isAttacking = false;
-        this.comboCount  = 0;
-        this.cb.onComboChanged?.(0);
-      }
+  /** Internal: play attack animation mượt với prev đúng */
+  private _playAttack(key: AnimKey) {
+    const action = this.actions[key];
+    if (!action) return;
+
+    const prev = this.currentAction; // giữ prev TRƯỚC khi đổi
+    action.reset();
+    action.enabled = true;
+    action.setEffectiveWeight(1);
+    action.setEffectiveTimeScale(1);
+
+    if (prev && prev !== action) {
+      prev.crossFadeTo(action, 0.08, true); // fade ngắn cho combat feel snappy
     }
+    action.play();
+
+    this.currentAction = action;
+    this.currentKey    = key;
+
+    this.comboCount = Math.min(this.comboCount + 1, 999);
+    this.comboTimer = 2.0;
+    this.cb.onComboChanged?.(this.comboCount);
+  }
+
+  // ── update ─────────────────────────────────────────────────────────────────
+
+  update(dt: number): { isAttacking: boolean } {
+    if (this.attackCooldown > 0) this.attackCooldown -= dt;
+
     if (this.comboCount > 0) {
       this.comboTimer -= dt;
       if (this.comboTimer <= 0) {
@@ -252,9 +277,12 @@ export class AnimationController {
         this.cb.onComboChanged?.(0);
       }
     }
+
     this.mixer?.update(dt);
     return { isAttacking: this.isAttacking };
   }
+
+  // ── drive ──────────────────────────────────────────────────────────────────
 
   drive(moving: boolean, sprinting: boolean, onGround: boolean) {
     if (this.isAttacking) return;
