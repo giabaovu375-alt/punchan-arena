@@ -8,7 +8,7 @@ import {
   CombatController,
   PlayerController,
   lerpAngle,
-  CameraIntro, // 👈 import CameraIntro
+  CameraIntro,
 } from "./controllers";
 
 import {
@@ -17,13 +17,20 @@ import {
   collisionManager,
 } from "./core";
 
-import { HubScene } from "./scenes";
+import { BaseScene } from "./scenes/BaseScene";
+import {
+  HubScene,
+  MainRoadScene,
+  LeftForestScene,
+  RightPlatformScene,
+  BossScene,
+  SunsetCitySquareScene, // Ghim sẵn phôi Map 2
+} from "./scenes";
 
 import {
   HUD,
   MobileUI,
   DialogueUI,
-  fadeToWhite,
 } from "./ui";
 
 import { INTRO_NPC_DIALOGUE } from "./dialogues";
@@ -37,7 +44,7 @@ import {
 
 export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
 
-type SceneMode = "intro" | "hub";
+type SceneMode = "intro" | "gameplay";
 
 export class GameEngine {
   private container: HTMLElement;
@@ -75,9 +82,10 @@ export class GameEngine {
   private dialogue!: DialogueUI;
   private loadingOverlay: HTMLElement | null = null;
 
+  // ── Scene management nâng cấp ─────────────────────────────────────────────
   private sceneMode: SceneMode = "intro";
+  private currentScene: BaseScene | null = null; 
   private introHandles: IntroSceneHandles | null = null;
-  private hubScene: HubScene | null = null;
   private npcTriggered = false;
   private lastPortalTarget: string | null = null;
 
@@ -138,7 +146,7 @@ export class GameEngine {
       this.camera,
       this.container,
       (key) => this.animCtrl.triggerAttack(key),
-      () => this.hubScene?.getEnemyRoots() ?? [],
+      () => this.currentScene?.getEnemyRoots() ?? [], // Dynamic target scanning cho mọi map
     );
 
     this.playerCtrl = new PlayerController({
@@ -163,11 +171,23 @@ export class GameEngine {
 
     this.hud = new HUD(container, character, this.isMobile);
 
-    // Lắng nghe damage từ goblin
+    // Lắng nghe damage toàn cục
     eventBus.on(GameEvents.PLAYER_DAMAGE, (data: { amount: number }) => {
       this.playerCtrl.hp = Math.max(0, this.playerCtrl.hp - data.amount / 100);
       this.hud.setHP(this.playerCtrl.hp);
       this.combatCtrl.camShake.addTrauma(0.3);
+
+      // Logic "Ép thua cốt truyện" tại phòng Boss
+      if (this.playerCtrl.hp <= 0 && this.currentScene?.name === "BossScene") {
+        this.playerCtrl.hp = 1.0; 
+        this.hud.setHP(1.0);
+        this.switchToScene("SunsetCitySquareScene").catch(err => console.error(err));
+      }
+    });
+
+    // Lắng nghe cổng dịch chuyển từ portal bộc phát
+    eventBus.on(GameEvents.PORTAL_ENTERED, (data: { targetScene: string; spawnPos?: THREE.Vector3 }) => {
+      this.switchToScene(data.targetScene, data.spawnPos).catch(err => console.error(err));
     });
 
     if (this.isMobile) {
@@ -188,13 +208,9 @@ export class GameEngine {
       );
     }
 
-    // ── Dựng IntroScene trước để có cảnh cho camera bay ─────────────────
     this.loadIntroScene();
-
-    // ── Khởi động game loop ────────────────────────────────────────────
     this.start();
 
-    // ── Bắt đầu cutscene intro (sau khi game loop đã chạy) ──────────────
     this.cameraIntro = new CameraIntro(this.camera, () => {
       this.introCompleted = true;
     });
@@ -243,7 +259,6 @@ export class GameEngine {
     setTimeout(() => el.parentElement?.removeChild(el), 300);
   }
 
-  // ── Scene loading ──────────────────────────────────────────────────────
   private clearThreeScene(target: THREE.Scene) {
     const toRemove: THREE.Object3D[] = [];
     target.traverse(o => {
@@ -253,11 +268,13 @@ export class GameEngine {
   }
 
   private loadIntroScene() {
-    if (this.hubScene) {
-      this.hubScene.scene.remove(this.player);
-      this.hubScene.unload().catch(err => console.error("unload hub error:", err));
-      this.hubScene = null;
+    if (this.currentScene) {
+      this.currentScene.scene.remove(this.player);
+      this.currentScene.unload().catch(err => console.error(err));
+      this.currentScene = null;
     }
+    this.introHandles = null;
+
     collisionManager.clear();
     this.clearThreeScene(this.scene);
     this.scene.add(this.player);
@@ -273,43 +290,78 @@ export class GameEngine {
     this.combatCtrl.reset();
   }
 
-  private async switchToHub() {
-    this.showLoadingOverlay("Đang tải map...");
-    await new Promise<void>((r) => setTimeout(r, 50));
+  // TỐI ƯU GỌN GÀNG: Đăng ký Map tự động thông qua Registry Dictionary
+  private async switchToScene(sceneName: string, spawnPos?: THREE.Vector3) {
+    this.showLoadingOverlay("Đang chuyển vùng đất...");
+    await new Promise<void>((r) => setTimeout(r, 60));
 
+    if (this.currentScene) {
+      this.currentScene.scene.remove(this.player);
+      await this.currentScene.unload();
+      this.currentScene = null;
+    }
+    this.introHandles = null;
+
+    collisionManager.clear();
     this.clearThreeScene(this.scene);
     this.scene.remove(this.player);
 
-    const hub = new HubScene();
-    let loaded = false;
-    try {
-      await hub.load();
-      loaded = true;
-    } catch (err) {
-      console.error("❌ Không load được HubScene:", err);
-    }
+    const sceneRegistry: Record<string, new () => BaseScene> = {
+      "HubScene": HubScene,
+      "MainRoadScene": MainRoadScene,
+      "LeftForestScene": LeftForestScene,
+      "RightPlatformScene": RightPlatformScene,
+      "BossScene": BossScene,
+      "SunsetCitySquareScene": SunsetCitySquareScene, // Sẵn sàng cho Map 2
+    };
 
-    if (!loaded) {
-      this.scene.add(this.player);
-      this.sceneMode    = "intro";
-      this.npcTriggered = false;
+    const SceneClass = sceneRegistry[sceneName];
+    if (!SceneClass) {
+      this.loadIntroScene();
       this.hideLoadingOverlay();
       return;
     }
 
-    hub.setPlayer(this.player);
-    hub.setCamera(this.camera);
-    hub.scene.add(this.player);
-    this.hubScene         = hub;
-    this.elapsed          = 0;
+    const newScene = new SceneClass();
+    let loaded = false;
+    try {
+      await newScene.load();
+      loaded = true;
+    } catch (err) {
+      console.error(`❌ Không load được ${sceneName}:`, err);
+    }
+
+    if (!loaded) {
+      this.loadIntroScene();
+      this.hideLoadingOverlay();
+      return;
+    }
+
+    newScene.setPlayer(this.player);
+    newScene.setCamera(this.camera);
+    newScene.scene.add(this.player);
+    
+    this.currentScene = newScene;
+    this.sceneMode = "gameplay";
+    this.elapsed   = 0;
     this.playerCtrl.setColliders([]);
-    this.player.position.set(0, 0, 30);
-    this.sceneMode        = "hub";
-    this.introHandles     = null;
+
+    if (spawnPos) {
+      this.player.position.copy(spawnPos);
+    } else {
+      // Đặt tọa độ spawn mặc định hợp lý cho từng Map cụ thể
+      if (sceneName === "HubScene") this.player.position.set(0, 0, 30);
+      else if (sceneName === "BossScene") this.player.position.set(0, 0, -25);
+      else this.player.position.set(0, 0, 0);
+    }
+
     this.lastPortalTarget = null;
     this.combatCtrl.reset();
-
     this.hideLoadingOverlay();
+  }
+
+  private async switchToHub() {
+    await this.switchToScene("HubScene", new THREE.Vector3(0, 0, 30));
   }
 
   // ── Placeholder ────────────────────────────────────────────────────────
@@ -412,19 +464,20 @@ export class GameEngine {
       this.timer.update();
       const dt = Math.min(this.timer.getDelta(), 0.05);
       this.update(dt);
-      const activeScene = this.sceneMode === "hub" && this.hubScene
-        ? this.hubScene.scene : this.scene;
-      this.renderer.render(activeScene, this.camera);
+      
+      // Render đúng Scene đang hoạt động
+      const renderScene = this.sceneMode === "gameplay" && this.currentScene 
+        ? this.currentScene.scene : this.scene;
+        
+      this.renderer.render(renderScene, this.camera);
       this.rafId = requestAnimationFrame(tick);
     };
     this.rafId = requestAnimationFrame(tick);
   }
 
   private update(dt: number) {
-    // ── Camera intro đang chạy → giao toàn quyền cho nó ─────────────────
     if (this.cameraIntro?.isActive()) {
       this.cameraIntro.tick(dt);
-      // Vẫn cập nhật animation và dialogue (nếu có)
       this.animCtrl.update(dt);
       this.dialogue.update(dt);
       return;
@@ -468,7 +521,7 @@ export class GameEngine {
       this.bodyParts.head.position.y = 1.75 + bob;
     }
 
-    // Scene logic
+    // ── GỌN GÀNG HOÁ LOGIC CẬP NHẬT SCENE ───────────────────────────────────
     if (this.sceneMode === "intro" && this.introHandles) {
       tickIntroScene(this.introHandles, dt, this.elapsed);
 
@@ -480,10 +533,11 @@ export class GameEngine {
           () => { this.switchToHub().catch(err => console.error(err)); },
         );
       }
-    } else if (this.sceneMode === "hub" && this.hubScene && typeof this.hubScene.checkPortals === "function") {
-      this.hubScene.update(dt);
+    } else if (this.currentScene) {
+      this.currentScene.update(dt);
+      
       if (!locked && !isAttacking) {
-        const target = this.hubScene.checkPortals(this.player.position);
+        const target = this.currentScene.checkPortals(this.player.position);
         if (target) {
           if (target !== this.lastPortalTarget) {
             this.lastPortalTarget = target;
@@ -491,7 +545,6 @@ export class GameEngine {
               targetScene: target,
               spawnPos: this.player.position.clone(),
             });
-            console.log(`🌐 Portal đến: ${target}`);
           }
         } else {
           this.lastPortalTarget = null;
@@ -532,16 +585,4 @@ export class GameEngine {
     window.removeEventListener("resize",    this.onResize);
     if (this.isMobile) {
       this.renderer.domElement.removeEventListener("touchstart", this.onTouchStart);
-      this.renderer.domElement.removeEventListener("touchmove",  this.onTouchMove);
-    }
-    this.hideLoadingOverlay();
-    this.combatCtrl.dispose();
-    this.mobileUI?.dispose();
-    this.hud.dispose();
-    this.dialogue.dispose();
-    this.screenManager.dispose();
-    this.renderer.dispose();
-    if (this.renderer.domElement.parentElement === this.container)
-      this.container.removeChild(this.renderer.domElement);
-  }
-  }
+      this.renderer.domElement.
