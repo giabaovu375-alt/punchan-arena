@@ -33,7 +33,7 @@ export class WorldScene extends BaseScene {
   public getEnemyRoots(): THREE.Object3D[] { return this.enemyManager?.getEnemyRoots() ?? []; }
 
   protected async onLoad(): Promise<void> {
-    console.log("🌍 Đang kiến tạo thế giới AAA...");
+    console.log(" Đang khởi tạo map");
 
     // ── 1. Ánh Sáng và Không Gian ───────────────────────────────────────
     setupLighting(this.scene); // Tái sử dụng HubLighting
