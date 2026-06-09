@@ -87,16 +87,12 @@ export class GameEngine {
 
     // ── Renderer ───────────────────────────────────────────────────────────
     this.renderer = new THREE.WebGLRenderer({
-      antialias:       !this.isMobile, // mobile tắt antialias
+      antialias:       true,
       powerPreference: "high-performance",
-      // Mobile: dùng precision thấp hơn cho fragment shader
-      precision:       this.isMobile ? "mediump" : "highp",
+      precision:       "highp",
     });
 
-    // Mobile: pixelRatio = 1 thay vì 2 → số pixel render giảm 4x
-    this.renderer.setPixelRatio(
-      this.isMobile ? Math.min(window.devicePixelRatio, 1) : Math.min(window.devicePixelRatio, 2)
-    );
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
 
     // Mobile: tắt shadow hoàn toàn
@@ -371,5 +367,4 @@ export class GameEngine {
     this.bodyParts = { body, head };
     return group;
   }
-          }
-        
+}
