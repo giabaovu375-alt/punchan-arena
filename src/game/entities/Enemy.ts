@@ -3,6 +3,42 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ANIMATION CACHE — dùng chung cho tất cả Enemy instances
+// Tránh load lại cùng 1 FBX nhiều lần (10 goblin = 40 requests → 4 requests)
+// ─────────────────────────────────────────────────────────────────────────────
+const _animCache = new Map<string, Promise<THREE.AnimationClip | null>>();
+
+function loadClipCached(url: string): Promise<THREE.AnimationClip | null> {
+  if (_animCache.has(url)) return _animCache.get(url)!;
+  const p = new Promise<THREE.AnimationClip | null>((res) => {
+    new FBXLoader().load(
+      url,
+      fbx => res(fbx.animations[0] ?? null),
+      undefined,
+      () => { console.warn(`⚠️ Clip failed: ${url}`); res(null); },
+    );
+  });
+  _animCache.set(url, p);
+  return p;
+}
+
+// MODEL CACHE — dùng chung skeleton/geometry, clone per instance
+const _modelCache = new Map<string, Promise<THREE.Group>>();
+
+function loadModelCached(url: string): Promise<THREE.Group> {
+  if (_modelCache.has(url)) return _modelCache.get(url)!;
+  const p = new Promise<THREE.Group>((res, rej) => {
+    if (url.endsWith(".glb") || url.endsWith(".gltf")) {
+      new GLTFLoader().load(url, g => res(g.scene as THREE.Group), undefined, rej);
+    } else {
+      new FBXLoader().load(url, fbx => res(fbx as unknown as THREE.Group), undefined, rej);
+    }
+  });
+  _modelCache.set(url, p);
+  return p;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────────────────────────────────────
 export interface EnemyConfig {
@@ -27,7 +63,7 @@ export const GOBLIN_CONFIG: EnemyConfig = {
   animWalk:       "/animation/animation-goblin/Walking.fbx",
   animAttack:     "/animation/animation-goblin/Standing Melee Attack Backhand.fbx",
   animDeath:      "/animation/animation-goblin/Zombie Reaction Hit.fbx",
-  scale:          0.03,
+  scale:          4.0,
   maxHp:          150,
   moveSpeed:      2.2,
   chaseRange:     15,
@@ -38,15 +74,15 @@ export const GOBLIN_CONFIG: EnemyConfig = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-type EnemyState    = "idle" | "patrol" | "chase" | "attack" | "dead";
-type EnemyAnimKey  = "idle" | "walk" | "attack" | "death";
+type EnemyState   = "idle" | "patrol" | "chase" | "attack" | "dead";
+type EnemyAnimKey = "idle" | "walk" | "attack" | "death";
 
 export class Enemy {
   readonly root: THREE.Group;
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Partial<Record<EnemyAnimKey, THREE.AnimationAction>> = {};
   private currentAction: THREE.AnimationAction | null = null;
-  private currentAnimKey: EnemyAnimKey | null = null; // ← track key hiện tại
+  private currentAnimKey: EnemyAnimKey | null = null;
 
   private state: EnemyState = "patrol";
   private hp: number;
@@ -62,12 +98,15 @@ export class Enemy {
   private hpFillEl:  HTMLElement | null = null;
   private hpLabelEl: HTMLElement | null = null;
 
-  // Flash emissive state — tránh setTimeout chồng nhau
   private flashTimer = 0;
   private originalEmissives = new Map<THREE.Material, THREE.Color>();
 
   private _dir  = new THREE.Vector3();
   private _flat = new THREE.Vector3();
+
+  // LOD: chỉ update AI khi player đủ gần
+  private static readonly AI_RANGE_SQ = 120 * 120; // 120 units
+  private _skipAI = false;
 
   constructor(
     spawnPos: THREE.Vector3,
@@ -92,7 +131,7 @@ export class Enemy {
     this.patrolTarget = spawnPos.clone();
 
     this.root = new THREE.Group();
-    this.root.frustumCulled = false;
+    this.root.frustumCulled = true; // bật frustum cull để THREE tự cull khi ra ngoài camera
     this.root.position.copy(spawnPos);
     this.scene.add(this.root);
 
@@ -107,7 +146,7 @@ export class Enemy {
   private buildPlaceholder() {
     const mat  = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.7 });
     const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.0, 4, 8), mat);
-    body.position.y = 1.0; body.castShadow = true; body.frustumCulled = false;
+    body.position.y = 1.0; body.castShadow = true;
     body.name = "__placeholder";
     this.root.add(body);
 
@@ -115,25 +154,28 @@ export class Enemy {
       new THREE.SphereGeometry(0.28, 12, 12),
       new THREE.MeshStandardMaterial({ color: 0xdd4444 }),
     );
-    head.position.y = 1.9; head.castShadow = true; head.frustumCulled = false;
+    head.position.y = 1.9; head.castShadow = true;
     head.name = "__placeholder";
     this.root.add(head);
 
     const eyeMat = new THREE.MeshStandardMaterial({
-      color: 0xff0000, emissive: 0xff2200, emissiveIntensity: 2,
+      color: 0xff0000, emissive: 0xff2200 as unknown as THREE.Color, emissiveIntensity: 2,
     });
     for (const sx of [-0.12, 0.12]) {
       const eye = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 6), eyeMat);
       eye.position.set(sx, 1.92, 0.24);
-      eye.frustumCulled = false; eye.name = "__placeholder";
+      eye.name = "__placeholder";
       this.root.add(eye);
     }
   }
 
-  // ── Load assets ────────────────────────────────────────────────────────────
+  // ── Load assets — dùng cache, không load lại ───────────────────────────────
   private async loadAssets() {
     try {
-      const model = await this.loadModel(this.cfg.modelUrl);
+      // Clone từ cache thay vì load lại
+      const src = await loadModelCached(this.cfg.modelUrl);
+      const model = src.clone();
+
       model.scale.setScalar(this.cfg.scale);
       model.updateMatrixWorld(true);
 
@@ -145,9 +187,9 @@ export class Enemy {
       model.traverse(n => {
         const mesh = n as THREE.Mesh;
         if (!mesh.isMesh) return;
-        mesh.castShadow = mesh.frustumCulled = false;
+        mesh.castShadow    = true;
+        mesh.frustumCulled = true;
 
-        // Lưu emissive gốc để flash không bị mất
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         mats.forEach(mat => {
           const m = mat as THREE.MeshStandardMaterial;
@@ -157,14 +199,12 @@ export class Enemy {
         });
       });
 
-      // Xoá placeholder, gắn model thật
       this.root.children
         .filter(c => c.name === "__placeholder")
         .forEach(c => this.root.remove(c));
       this.root.add(model);
       this.root.updateMatrixWorld(true);
 
-      // Mixer
       this.mixer = new THREE.AnimationMixer(model);
       this.mixer.addEventListener("finished", (e: any) => {
         if (e.action === this.actions.attack) {
@@ -173,12 +213,12 @@ export class Enemy {
         }
       });
 
-      // FIX: load song song bằng loader riêng mỗi clip → nhanh hơn ~3–4x
+      // Tất cả goblin dùng chung 4 clip đã cache
       const [idle, walk, attack, death] = await Promise.all([
-        this.loadClip(this.cfg.animIdle),
-        this.loadClip(this.cfg.animWalk),
-        this.loadClip(this.cfg.animAttack),
-        this.loadClip(this.cfg.animDeath),
+        loadClipCached(this.cfg.animIdle),
+        loadClipCached(this.cfg.animWalk),
+        loadClipCached(this.cfg.animAttack),
+        loadClipCached(this.cfg.animDeath),
       ]);
 
       if (idle)   this.actions.idle   = this.mixer.clipAction(idle);
@@ -200,32 +240,9 @@ export class Enemy {
     }
   }
 
-  private loadModel(url: string): Promise<THREE.Group> {
-    return new Promise((res, rej) => {
-      if (url.endsWith(".glb") || url.endsWith(".gltf")) {
-        new GLTFLoader().load(url, g => res(g.scene as THREE.Group), undefined, rej);
-      } else {
-        new FBXLoader().load(url, fbx => res(fbx as unknown as THREE.Group), undefined, rej);
-      }
-    });
-  }
-
-  // FIX: loader riêng mỗi clip → load song song không conflict
-  private loadClip(url: string): Promise<THREE.AnimationClip | null> {
-    return new Promise((res) => {
-      new FBXLoader().load(
-        url,
-        fbx => res(fbx.animations[0] ?? null),
-        undefined,
-        (err) => { console.warn(`⚠️ Clip failed: ${url}`, err); res(null); },
-      );
-    });
-  }
-
-  // FIX: check currentAnimKey trước khi play → không spam reset mỗi frame
   private playAnim(key: EnemyAnimKey, crossfade = 0.2) {
     if (!this.mixer) return;
-    if (this.currentAnimKey === key) return; // ← không làm gì nếu đang chạy rồi
+    if (this.currentAnimKey === key) return;
 
     const next = this.actions[key];
     if (!next) return;
@@ -235,7 +252,7 @@ export class Enemy {
     }
     next.reset().fadeIn(crossfade).play();
     this.currentAction  = next;
-    this.currentAnimKey = key; // ← cập nhật key
+    this.currentAnimKey = key;
   }
 
   // ── HP bar ─────────────────────────────────────────────────────────────────
@@ -276,6 +293,8 @@ export class Enemy {
 
   private updateHpBarPosition(camera: THREE.Camera) {
     if (!this.hpBarEl || this.state === "dead") return;
+    // Ẩn HP bar khi bị cull (skip AI)
+    if (this._skipAI) { this.hpBarEl.style.opacity = "0"; return; }
     const pos = this.root.position.clone();
     pos.y += 2.4;
     pos.project(camera);
@@ -315,7 +334,7 @@ export class Enemy {
     if (this.state === "dead") return;
     this.hp = Math.max(0, this.hp - dmg);
     this.refreshHpBar();
-    this.flashTimer = 0.12; // FIX: dùng timer thay setTimeout
+    this.flashTimer = 0.12;
     if (this.hp <= 0) this.die();
   }
 
@@ -335,10 +354,17 @@ export class Enemy {
   update(dt: number, playerPos: THREE.Vector3, camera: THREE.Camera): number {
     if (this.state === "dead") return 0;
 
+    // LOD: cách xa hơn AI_RANGE → chỉ update mixer, bỏ qua AI + HP bar
+    const distSq = this.root.position.distanceToSquared(playerPos);
+    this._skipAI = distSq > Enemy.AI_RANGE_SQ;
+
     this.mixer?.update(dt);
+
+    if (this._skipAI) return 0;
+
     this.updateHpBarPosition(camera);
 
-    // FIX: flash emissive dùng timer, không dùng setTimeout
+    // Flash emissive
     if (this.flashTimer > 0) {
       this.flashTimer -= dt;
       const on = this.flashTimer > 0;
@@ -360,20 +386,20 @@ export class Enemy {
       });
     }
 
-    const dist = this.root.position.distanceTo(playerPos);
+    const dist = Math.sqrt(distSq);
     let dmg = 0;
 
     switch (this.state) {
       case "patrol": {
         if (dist < this.cfg.chaseRange) {
           this.state = "chase";
-          this.playAnim("walk"); // chỉ gọi 1 lần khi đổi state
+          this.playAnim("walk");
           break;
         }
         const d2t = this.root.position.distanceTo(this.patrolTarget);
         if (d2t < 0.5) {
           this.patrolWaitTimer -= dt;
-          this.playAnim("idle"); // chỉ gọi khi vừa dừng lại
+          this.playAnim("idle");
           if (this.patrolWaitTimer <= 0) {
             this.pickPatrolTarget();
             this.patrolWaitTimer = 1 + Math.random() * 1.5;
@@ -397,7 +423,7 @@ export class Enemy {
           this.state = "attack";
           break;
         }
-        this.playAnim("walk"); // currentAnimKey guard lo — không spam
+        this.playAnim("walk");
         this.moveToward(playerPos, dt, this.cfg.moveSpeed);
         break;
       }
@@ -413,7 +439,7 @@ export class Enemy {
         if (this.attackTimer <= 0 && !this.isAttacking) {
           this.attackTimer = this.cfg.attackCooldown;
           this.isAttacking = true;
-          this.currentAnimKey = null; // ← reset để force play attack
+          this.currentAnimKey = null;
           this.playAnim("attack", 0.1);
           dmg = this.cfg.attackDamage;
         }
@@ -460,7 +486,7 @@ export class Enemy {
 // ─────────────────────────────────────────────────────────────────────────────
 export class EnemyManager {
   private enemies: Enemy[] = [];
-  private deadCount = 0; // FIX: track dead riêng, không filter mỗi frame
+  private deadCount = 0;
 
   constructor(
     private scene: THREE.Scene,
@@ -480,7 +506,6 @@ export class EnemyManager {
       if (e.isDead()) this.deadCount++;
     }
 
-    // FIX: chỉ filter khi có enemy chết, không filter mỗi frame
     if (this.deadCount > 0) {
       this.enemies = this.enemies.filter(e => e.root.parent !== null);
       this.deadCount = 0;
@@ -505,5 +530,4 @@ export class EnemyManager {
     this.enemies.forEach(e => e.dispose());
     this.enemies = [];
   }
-        }
-                        
+}
