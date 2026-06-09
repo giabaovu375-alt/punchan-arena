@@ -11,165 +11,124 @@ import { setupGround } from "./hub/HubGround";
 import { optimizeHubScene } from "./hub/HubCollisionOptimizer";
 import { setupPortals, type PortalMarker } from "./hub/HubPortal";
 import { createLeafParticles, tickLeafParticles, type LeafParticleSystem } from "./hub/HubParticles";
-
 import { EnemyManager, GOBLIN_CONFIG } from "../entities/Enemy";
 
-// Hàm load asset chạy song song tối ưu hóa thời gian loading screen
+// ─── Load tất cả models song song ────────────────────────────────────────────
 async function loadAllModels(loader: GLTFLoader): Promise<Map<string, THREE.Group>> {
-  const cache = new Map<string, THREE.Group>();
+  const cache  = new Map<string, THREE.Group>();
   const unique = [...new Set(ALL_MODEL_NAMES)];
-  await Promise.all(unique.map(name =>
+
+  await Promise.all(unique.map((name) =>
     new Promise<void>((resolve) => {
       loader.load(
         `${MODEL_BASE}/${name}.gltf`,
         (gltf) => { cache.set(name, gltf.scene); resolve(); },
         undefined,
-        (err) => { console.warn(`⚠️ Không load được ${name}`, err); resolve(); }
+        (err)  => { console.warn(`⚠️ Không load được ${name}`, err); resolve(); }
       );
     })
   ));
   return cache;
 }
 
+// ─── HubScene ─────────────────────────────────────────────────────────────────
 export class HubScene extends BaseScene {
+  public  scene: THREE.Scene;
+
   private loader       = new GLTFLoader();
   private modelCache   = new Map<string, THREE.Group>();
   private portalMarkers: PortalMarker[] = [];
   private particleSystem: LeafParticleSystem | null = null;
-  private elapsed      = 0;
+  private elapsed = 0;
 
-  private enemyManager: EnemyManager | null = null;
-  private playerRef:  THREE.Object3D | null = null;
-  private cameraRef:  THREE.Camera   | null = null;
-
-  // Cờ đánh dấu trạng thái nạp cảnh tĩnh
-  private isLoaded = false;
-
-  public scene: THREE.Scene;
+  private enemyManager!: EnemyManager;
+  private playerRef!:    THREE.Object3D;
+  private cameraRef!:    THREE.Camera;
 
   constructor() {
     super("HubScene");
     this.scene = new THREE.Scene();
   }
 
-  // Nhận thực thể Player từ GameEngine bốc qua
-  public setPlayer(player: THREE.Object3D) {
-    this.playerRef = player;
-    console.log("✅ HubScene: playerRef set");
-  }
-
-  // Nhận Camera điều hướng từ GameEngine bốc qua
-  public setCamera(camera: THREE.Camera) {
-    this.cameraRef = camera;
-    console.log("✅ HubScene: cameraRef set");
-  }
-
-  // Trả về danh sách quái cho CombatController quét vùng đánh (Hitbox)
+  public setPlayer(p: THREE.Object3D) { this.playerRef = p; }
+  public setCamera(c: THREE.Camera)   { this.cameraRef = c; }
   public getEnemyRoots(): THREE.Object3D[] {
     return this.enemyManager?.getEnemyRoots() ?? [];
   }
 
-  // Lắng nghe sự kiện Player vung kiếm/đấm đá để xử lý trừ máu quái
-  private onPlayerAttack = (data: {
-    origin: THREE.Vector3;
-    forward: THREE.Vector3;
-    range: number;
-    damage: number;
-  }) => {
-    this.enemyManager?.hitInRange(data.origin, data.range, data.damage);
-  };
-
-  // Khởi tạo vòng đời nạp Asset của Map
+  // ─── Lifecycle ──────────────────────────────────────────────────────────────
   protected async onLoad(): Promise<void> {
-    console.log("🌅 HubScene loading...");
-    try {
-      this.modelCache = await loadAllModels(this.loader);
-      setupLighting(this.scene);
-      setupGround(this.scene);
-      optimizeHubScene(this.scene, this.modelCache);
-      this.portalMarkers  = setupPortals(this.scene);
-      this.particleSystem = createLeafParticles(this.scene);
+    this.modelCache    = await loadAllModels(this.loader);
 
-      this.enemyManager = new EnemyManager(this.scene, document.body);
+    setupLighting(this.scene);
+    setupGround(this.scene);
+    optimizeHubScene(this.scene, this.modelCache);
 
-      // Spawn đống Goblin lính lác canh giữ tế đàn
-      this.enemyManager.spawn(
-        [
-          new THREE.Vector3( 12, 0, 38),
-          new THREE.Vector3(-12, 0, 38),
-          new THREE.Vector3(  0, 0, 48),
-          new THREE.Vector3( 18, 0, 30),
-        ],
-        GOBLIN_CONFIG,
-      );
+    this.portalMarkers  = setupPortals(this.scene);
+    this.particleSystem = createLeafParticles(this.scene);
 
-      eventBus.on(GameEvents.PLAYER_ATTACK, this.onPlayerAttack);
+    this.enemyManager = new EnemyManager(this.scene, document.body);
+    this.enemyManager.spawn(
+      [
+        new THREE.Vector3( 12, 0, 38),
+        new THREE.Vector3(-12, 0, 38),
+        new THREE.Vector3(  0, 0, 48),
+        new THREE.Vector3( 18, 0, 30),
+      ],
+      GOBLIN_CONFIG
+    );
 
-      this.isLoaded = true; // Đánh dấu hoàn tất
-      console.log("✅ HubScene loaded!");
-      eventBus.emit(GameEvents.SCENE_LOADED, { sceneName: "HubScene" });
-    } catch (error) {
-      console.error("❌ Error loading HubScene:", error);
-      throw error;
-    }
+    eventBus.on(GameEvents.PLAYER_ATTACK, this._onPlayerAttack);
+    eventBus.emit(GameEvents.SCENE_LOADED, { sceneName: "HubScene" });
   }
 
-  // Dọn dẹp bộ nhớ khi chuyển đổi Map để tránh tràn RAM (Memory Leak)
   protected async onUnload(): Promise<void> {
-    console.log("🌅 HubScene unloading...");
-    this.isLoaded = false;
-    eventBus.off(GameEvents.PLAYER_ATTACK, this.onPlayerAttack);
+    eventBus.off(GameEvents.PLAYER_ATTACK, this._onPlayerAttack);
     this.enemyManager?.dispose();
-    this.enemyManager = null;
     collisionManager.clear();
     this.modelCache.clear();
     this.portalMarkers  = [];
     this.particleSystem = null;
   }
 
-  // Vòng lặp logic nội tại của riêng Hub Map
-  protected onUpdate(deltaTime: number): void {
-    // TỐI ƯU CỐT LÕI: Guard clause chặn đứng hoàn toàn việc chạy logic quái/hiệu ứng 
-    // khi data hoặc liên kết nhân vật chưa sẵn sàng. Chống lỗi crash "cannot read property of undefined".
-    if (!this.isLoaded || !this.playerRef || !this.cameraRef) return;
+  protected onUpdate(dt: number): void {
+    // Guard: chờ player + camera sẵn sàng mới chạy logic
+    if (!this.playerRef || !this.cameraRef) return;
 
-    this.elapsed += deltaTime;
+    this.elapsed += dt;
 
-    // Xoay vòng các Gate Portal cho đẹp mắt
+    // Portal ring xoay
     for (const marker of this.portalMarkers) {
-      if (marker.mesh.children[0])
-        marker.mesh.children[0].rotation.z += deltaTime * 0.3;
+      const ring = marker.mesh.children[0] as THREE.Mesh | undefined;
+      if (ring) ring.rotation.z += dt * 0.3;
     }
 
-    // Cập nhật hệ thống hạt (lá rơi quanh cây đại thụ)
-    if (this.particleSystem) tickLeafParticles(this.particleSystem, deltaTime);
+    if (this.particleSystem) tickLeafParticles(this.particleSystem, dt);
 
-    // Xử lý AI quái dí theo và tẩn Player
-    if (this.enemyManager) {
-      const totalDmg = this.enemyManager.update(
-        deltaTime,
-        this.playerRef.position,
-        this.cameraRef,
-      );
-      if (totalDmg > 0) {
-        eventBus.emit(GameEvents.PLAYER_DAMAGE, { amount: totalDmg });
-      }
-    }
+    const dmg = this.enemyManager?.update(dt, this.playerRef.position, this.cameraRef) ?? 0;
+    if (dmg > 0) eventBus.emit(GameEvents.PLAYER_DAMAGE, { amount: dmg });
   }
 
-  public update(deltaTime: number): void {
-    this.onUpdate(deltaTime);
-  }
+  public update(dt: number): void { this.onUpdate(dt); }
 
-  // Kiểm tra xem tọa độ của Player có đang đè lên vùng Gate Portal nào không
+  // Dùng bình phương thay sqrt — nhanh hơn, đủ chính xác
   public checkPortals(playerPos: THREE.Vector3): string | null {
-    if (!this.portalMarkers.length) return null;
     for (const marker of this.portalMarkers) {
       const dx = playerPos.x - marker.position.x;
       const dz = playerPos.z - marker.position.z;
-      if (Math.sqrt(dx * dx + dz * dz) < marker.radius)
+      if (dx * dx + dz * dz < marker.radius * marker.radius)
         return marker.targetScene;
     }
     return null;
   }
+
+  // ─── Event handler ──────────────────────────────────────────────────────────
+  private _onPlayerAttack = (data: {
+    origin:   THREE.Vector3;
+    forward:  THREE.Vector3;
+    range:    number;
+    damage:   number;
+  }) => {
+    this.enemyManager?.hitInRange(data.origin, data.range, data.damage);
+  };
 }
