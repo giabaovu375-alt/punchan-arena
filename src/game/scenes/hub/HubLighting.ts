@@ -8,15 +8,7 @@ export function setupLighting(scene: THREE.Scene): void {
 
   const sun = new THREE.DirectionalLight(0xff6633, 1.4);
   sun.position.set(-60, 25, 40);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
-  sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 200;
-  sun.shadow.camera.left = -70;
-  sun.shadow.camera.right = 70;
-  sun.shadow.camera.top = 70;
-  sun.shadow.camera.bottom = -70;
-  sun.shadow.bias = -0.0005;
+  sun.castShadow = false;
   scene.add(sun);
 
   const fillLight = new THREE.DirectionalLight(0xff8899, 0.5);
