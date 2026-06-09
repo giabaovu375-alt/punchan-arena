@@ -144,16 +144,13 @@ export class GameEngine {
         {
           jump:         () => this.playerCtrl.requestJump(),
           attack:       (key) => this.combatCtrl.scheduleAttack(key as "punch" | "kick" | "mmaKick"),
-          rotateCamera: (dYaw, dPitch) => {
-            this.camCtrl.addYaw(dYaw);
-            this.camCtrl.addPitch(dPitch);
-          },
+          rotateCamera: (dYaw, dPitch) => this.camCtrl.rotate(dYaw, dPitch),
         }
       );
     }
 
     // ── Tách-ra controllers ────────────────────────────────────────────────
-    this.camCtrl = new CameraController();
+    this.camCtrl = new CameraController(this.camera, this.player, this.playerHeight);
 
     this.overlay = new LoadingOverlay(container);
 
@@ -176,15 +173,16 @@ export class GameEngine {
       this.renderer.domElement,
       container,
       {
-        onRotate:      (dY, dP) => { this.camCtrl.addYaw(dY); this.camCtrl.addPitch(dP); },
-        onZoom:        (d)      => this.camCtrl.addZoom(d),
+        onRotate:      (dY, dP) => this.camCtrl.rotate(dY, dP),
+        onZoom:        (d)      => this.camCtrl.zoom(d),
         onAttack:      ()       => this.combatCtrl.scheduleAttack("punch"),
         isIntroActive: ()       => this.cameraIntro?.isActive() ?? false,
         onResize:      (w, h)   => {
-          this.camera.aspect = w / h;
-          this.camera.updateProjectionMatrix();
+          this.camCtrl.onResize(w / h);
           this.renderer.setSize(w, h);
         },
+        onTouchStart:  (e) => this.camCtrl.onTouchStart(e),
+        onTouchMove:   (e) => this.camCtrl.onTouchMove(e),
       },
       this.isMobile
     );
@@ -244,14 +242,14 @@ export class GameEngine {
     this.elapsed += dt;
 
     // ── Camera lerp ─────────────────────────────────────────────────────────
-    const lk = this.camCtrl.tick(dt);
+    this.camCtrl.update(dt);
 
     // ── Player movement ─────────────────────────────────────────────────────
     const locked = this.dialogue.isVisible();
     let moving = false, sprinting = false, onGround = true;
 
     if (!locked) {
-      const r = this.playerCtrl.update(dt, this.camCtrl.yaw, this.player);
+      const r = this.playerCtrl.update(dt, this.camCtrl.getYaw(), this.player);
       moving    = r.moving;
       sprinting = r.sprinting;
       onGround  = r.onGround;
@@ -279,12 +277,12 @@ export class GameEngine {
     this.dialogue.update(dt);
 
     // ── Camera apply ────────────────────────────────────────────────────────
-    this.camCtrl.apply(this.camera, this.player.position, this.playerHeight, lk);
+    
 
     // ── HUD ─────────────────────────────────────────────────────────────────
     this.hud.setStamina(this.playerCtrl.stamina);
     this.hud.setHP(this.playerCtrl.hp);
-    this.hud.setCompassYaw(this.camCtrl.yaw);
+    this.hud.setCompassYaw(this.camCtrl.getYaw());
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
