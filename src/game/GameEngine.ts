@@ -15,7 +15,6 @@ import { HUD, MobileUI, DialogueUI } from "./ui";
 import { WorldScene } from "./scenes/WorldScene";
 import { type IntroSceneHandles } from "./IntroScene";
 
-// ── Tách ra ──────────────────────────────────────────────────────────────────
 import { CameraController } from "./controllers/CameraController";
 import { InputController }  from "./controllers/InputController";
 import { LoadingOverlay }   from "./controllers/LoadingOverlay";
@@ -25,7 +24,6 @@ export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./ty
 
 // ─── GameEngine ───────────────────────────────────────────────────────────────
 export class GameEngine {
-  // Three.js core
   private scene:    THREE.Scene;
   private camera:   THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
@@ -34,7 +32,6 @@ export class GameEngine {
   private disposed= false;
   private elapsed = 0;
 
-  // Character
   private character:    CharacterDef;
   private isMobile:     boolean;
   private player!:      THREE.Object3D;
@@ -43,27 +40,27 @@ export class GameEngine {
   private playerHeight= 1.6;
   private animTime    = 0;
 
-  // Controllers (tách file)
   private camCtrl!:     CameraController;
   private inputCtrl!:   InputController;
   private overlay!:     LoadingOverlay;
   private sceneCtrl!:   SceneController;
 
-  // Controllers (existing)
   private animCtrl!:    AnimationController;
   private playerCtrl!:  PlayerController;
   private combatCtrl!:  CombatController;
   private cameraIntro!: CameraIntro;
 
-  // UI
   private hud!:         HUD;
   private mobileUI:     MobileUI | null = null;
   private dialogue!:    DialogueUI;
   private screenManager!: ScreenManager;
 
-  // Scene state — dùng qua sceneCtrl
   private _worldScene:   WorldScene | null        = null;
   private _introHandles: IntroSceneHandles | null = null;
+
+  // ── Throttle: HUD + compass chỉ update 10fps thay vì 60fps ─────────────────
+  private _hudTimer   = 0;
+  private _frameCount = 0;
 
   private constructor(
     private container: HTMLElement,
@@ -74,27 +71,45 @@ export class GameEngine {
     this.character = character;
     this.isMobile  = ("ontouchstart" in window) || navigator.maxTouchPoints > 0;
 
-    // ── Renderer ───────────────────────────────────────────────────────────
-    this.scene  = new THREE.Scene();
+    // ── Scene ──────────────────────────────────────────────────────────────
+    this.scene            = new THREE.Scene();
     this.scene.background = new THREE.Color(0x9bc4e2);
     this.scene.fog        = new THREE.Fog(0x9bc4e2, 40, 180);
 
+    // ── Camera ─────────────────────────────────────────────────────────────
     this.camera = new THREE.PerspectiveCamera(
       52,
       container.clientWidth / container.clientHeight,
-      0.1, 600
+      0.1,
+      // Mobile: far plane nhỏ hơn → ít fragment shader work hơn
+      this.isMobile ? 400 : 600,
     );
+
+    // ── Renderer ───────────────────────────────────────────────────────────
     this.renderer = new THREE.WebGLRenderer({
-      antialias:         !this.isMobile,
-      powerPreference:   "high-performance",
+      antialias:       !this.isMobile, // mobile tắt antialias
+      powerPreference: "high-performance",
+      // Mobile: dùng precision thấp hơn cho fragment shader
+      precision:       this.isMobile ? "mediump" : "highp",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    // Mobile: pixelRatio = 1 thay vì 2 → số pixel render giảm 4x
+    this.renderer.setPixelRatio(
+      this.isMobile ? Math.min(window.devicePixelRatio, 1) : Math.min(window.devicePixelRatio, 2)
+    );
     this.renderer.setSize(container.clientWidth, container.clientHeight);
-    this.renderer.shadowMap.enabled  = !this.isMobile;
-    this.renderer.shadowMap.type     = THREE.PCFShadowMap;
-    this.renderer.toneMapping        = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure= 1.05;
-    this.renderer.outputColorSpace   = THREE.SRGBColorSpace;
+
+    // Mobile: tắt shadow hoàn toàn
+    this.renderer.shadowMap.enabled = !this.isMobile;
+    this.renderer.shadowMap.type    = THREE.PCFShadowMap;
+
+    this.renderer.toneMapping         = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.outputColorSpace    = THREE.SRGBColorSpace;
+
+    // Tắt sort objects — tiết kiệm CPU mỗi frame (bật lại nếu có transparent z-fight)
+    this.renderer.sortObjects = false;
+
     container.style.position = "relative";
     container.appendChild(this.renderer.domElement);
 
@@ -118,7 +133,7 @@ export class GameEngine {
 
     this.playerCtrl = new PlayerController({
       character,
-      worldRadius: 140,
+      worldRadius: 400, // FIX: từ 140 → 400, đủ bao toàn map
       onAttack: (key) => this.combatCtrl.scheduleAttack(key as "punch" | "kick" | "mmaKick"),
     });
 
@@ -149,9 +164,7 @@ export class GameEngine {
       );
     }
 
-    // ── Tách-ra controllers ────────────────────────────────────────────────
     this.camCtrl = new CameraController(this.camera, this.player, this.playerHeight);
-
     this.overlay = new LoadingOverlay(container);
 
     this.sceneCtrl = new SceneController(
@@ -196,7 +209,6 @@ export class GameEngine {
 
     this.playerCtrl.bindKeyboard();
 
-    // ── Khởi động ──────────────────────────────────────────────────────────
     this.sceneCtrl.loadIntro(this.isMobile);
     this._start();
 
@@ -218,19 +230,41 @@ export class GameEngine {
   // ── Game Loop ──────────────────────────────────────────────────────────────
   private _start() {
     this.timer.update();
-    const tick = () => {
-      if (this.disposed) return;
-      this.timer.update();
-      const dt          = Math.min(this.timer.getDelta(), 0.05);
-      this._update(dt);
-      const renderScene = this._worldScene ? this._worldScene.scene : this.scene;
-      this.renderer.render(renderScene, this.camera);
+
+    // Mobile: target 30fps thay vì 60fps → CPU/GPU giảm tải 50%
+    if (this.isMobile) {
+      let lastTime = 0;
+      const FRAME_MS = 1000 / 30;
+      const tick = (now: number) => {
+        if (this.disposed) return;
+        this.rafId = requestAnimationFrame(tick);
+        const delta = now - lastTime;
+        if (delta < FRAME_MS) return; // skip frame nếu chưa đủ ~33ms
+        lastTime = now - (delta % FRAME_MS);
+        this.timer.update();
+        const dt = Math.min(this.timer.getDelta(), 0.05);
+        this._update(dt);
+        const renderScene = this._worldScene ? this._worldScene.scene : this.scene;
+        this.renderer.render(renderScene, this.camera);
+      };
       this.rafId = requestAnimationFrame(tick);
-    };
-    this.rafId = requestAnimationFrame(tick);
+    } else {
+      const tick = () => {
+        if (this.disposed) return;
+        this.timer.update();
+        const dt = Math.min(this.timer.getDelta(), 0.05);
+        this._update(dt);
+        const renderScene = this._worldScene ? this._worldScene.scene : this.scene;
+        this.renderer.render(renderScene, this.camera);
+        this.rafId = requestAnimationFrame(tick);
+      };
+      this.rafId = requestAnimationFrame(tick);
+    }
   }
 
   private _update(dt: number): void {
+    this._frameCount++;
+
     // ── Intro cutscene ──────────────────────────────────────────────────────
     if (this.cameraIntro?.isActive()) {
       this.cameraIntro.tick(dt);
@@ -241,10 +275,10 @@ export class GameEngine {
 
     this.elapsed += dt;
 
-    // ── Camera lerp ─────────────────────────────────────────────────────────
+    // ── Camera ──────────────────────────────────────────────────────────────
     this.camCtrl.update(dt);
 
-    // ── Player movement ─────────────────────────────────────────────────────
+    // ── Player ──────────────────────────────────────────────────────────────
     const locked = this.dialogue.isVisible();
     let moving = false, sprinting = false, onGround = true;
 
@@ -276,13 +310,14 @@ export class GameEngine {
     this.sceneCtrl.tick(dt, this.elapsed);
     this.dialogue.update(dt);
 
-    // ── Camera apply ────────────────────────────────────────────────────────
-    
-
-    // ── HUD ─────────────────────────────────────────────────────────────────
-    this.hud.setStamina(this.playerCtrl.stamina);
-    this.hud.setHP(this.playerCtrl.hp);
-    this.hud.setCompassYaw(this.camCtrl.getYaw());
+    // ── HUD: chỉ update 10fps — DOM operation tốn kém trên mobile ───────────
+    this._hudTimer += dt;
+    if (this._hudTimer >= 0.1) {
+      this._hudTimer = 0;
+      this.hud.setStamina(this.playerCtrl.stamina);
+      this.hud.setHP(this.playerCtrl.hp);
+      this.hud.setCompassYaw(this.camCtrl.getYaw());
+    }
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -306,9 +341,9 @@ export class GameEngine {
       this.container.removeChild(this.renderer.domElement);
   }
 
-  // ── Placeholder khi không có model ────────────────────────────────────────
+  // ── Placeholder ────────────────────────────────────────────────────────────
   private _createPlaceholder(): THREE.Object3D {
-    const group  = new THREE.Group();
+    const group   = new THREE.Group();
     const bodyMat = new THREE.MeshStandardMaterial({
       color: this.character.color, roughness: 0.6, metalness: 0.15,
     });
@@ -336,4 +371,5 @@ export class GameEngine {
     this.bodyParts = { body, head };
     return group;
   }
-}
+          }
+        
