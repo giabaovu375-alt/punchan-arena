@@ -40,13 +40,9 @@ export class WorldScene extends BaseScene {
   private pillarFires: { light: THREE.PointLight; phase: number }[] = [];
   private centralFire!: THREE.PointLight;
 
-  // ── Throttle: chỉ animate lights mỗi 2 frame ──────────────────────────────
-  private _frameCount = 0;
-
   constructor() {
     super("WorldScene");
     this.scene = new THREE.Scene();
-    // Fog để cull geometry xa — giảm overdraw đáng kể trên map lớn
     this.scene.fog = new THREE.Fog(0x0d0b0a, 80, 320);
   }
 
@@ -66,6 +62,16 @@ export class WorldScene extends BaseScene {
 
     setupLighting(this.scene);
 
+    // Lớp nền chung cho toàn bộ thế giới
+    const baseGround = new THREE.Mesh(
+      new THREE.PlaneGeometry(800, 800),
+      new THREE.MeshStandardMaterial({ color: 0x2a1f1a, roughness: 1, flatShading: true })
+    );
+    baseGround.rotation.x = -Math.PI / 2;
+    baseGround.position.y = -0.5;
+    baseGround.receiveShadow = true;
+    this.scene.add(baseGround);
+
     this._buildHub();
     this._buildMainRoad();
     this._buildLeftForest();
@@ -78,23 +84,18 @@ export class WorldScene extends BaseScene {
     this._spawnEnemies();
 
     eventBus.on(GameEvents.PLAYER_ATTACK, this._onPlayerAttack);
-    eventBus.emit(GameEvents.SCENE_LOADED, { sceneName: "WorldScene" });
   }
 
   protected onUpdate(dt: number): void {
     if (!this.playerRef || !this.cameraRef) return;
     this.elapsed += dt;
-    this._frameCount++;
 
     if (this.particleSystem) tickLeafParticles(this.particleSystem, dt);
 
-    // Animate lights mỗi 2 frame — mắt người không phân biệt được
-    if (this._frameCount % 2 === 0) {
-      this._animateTorches(dt * 2);
-      this._animateWisps(dt * 2);
-      this._animatePillarFires(dt * 2);
-      this._animateCentralFire();
-    }
+    this._animateTorches(dt);
+    this._animateWisps(dt);
+    this._animatePillarFires(dt);
+    this._animateCentralFire();
 
     const dmg = this.enemyManager?.update(dt, this.playerRef.position, this.cameraRef) ?? 0;
     if (dmg > 0) eventBus.emit(GameEvents.PLAYER_DAMAGE, { amount: dmg });
@@ -108,7 +109,6 @@ export class WorldScene extends BaseScene {
     this.propCache.clear();
     this.particleSystem = null;
 
-    // Dispose tất cả lights — tránh memory leak
     [...this.torches, ...this.wisps, ...this.pillarFires].forEach(({ light }) => {
       this.scene.remove(light);
       light.dispose();
@@ -160,16 +160,8 @@ export class WorldScene extends BaseScene {
   // ═══════════════════════════════════════════════════════════════════════════
 
   private _buildHub(): void {
-    // Ground lớn bao phủ toàn map — không để void giữa các khu
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(800, 800),
-      new THREE.MeshStandardMaterial({ color: 0x3d2b1f, roughness: 0.95, flatShading: true })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    this.scene.add(ground);
+    this._addPlane(100, 100, 0x3d2b1f, ZONE.HUB);
 
-    // Path dọc + ngang
     const pathMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 1 });
     [
       { w: 3.5, h: 100, x: 0, z: 10 },
@@ -187,7 +179,6 @@ export class WorldScene extends BaseScene {
 
   private _buildMainRoad(): void {
     const O = ZONE.MAIN_ROAD;
-
     this._addPlane(120, 360, 0x1c1a0f, O);
 
     const road = new THREE.Mesh(
@@ -198,12 +189,14 @@ export class WorldScene extends BaseScene {
     road.position.set(O.x, 0.02, O.z);
     this.scene.add(road);
 
-    // ── FIX LAG: cứ 50 units mới add 1 PointLight thay vì mỗi 25 units ──────
-    // Tổng light giảm từ 26 → 7 cho MainRoad
-    for (let dz = -150; dz <= 150; dz += 25) {
-      const addLight = dz % 50 === 0;
-      this._addTorch(new THREE.Vector3(O.x - 4, 0, O.z + dz), addLight);
-      this._addTorch(new THREE.Vector3(O.x + 4, 0, O.z + dz), addLight);
+    for (let dz = -150; dz <= 150; dz += 100) {
+      const pos = new THREE.Vector3(O.x, 2.8, O.z + dz);
+      const light = new THREE.PointLight(0xff6a1a, 6.0, 60);
+      light.position.copy(pos);
+      this.scene.add(light);
+      this.torches.push({ light, phase: dz * 0.1 });
+      this._addTorchMesh(new THREE.Vector3(O.x - 4, 0, O.z + dz));
+      this._addTorchMesh(new THREE.Vector3(O.x + 4, 0, O.z + dz));
     }
 
     this._placeProp("stylized_fence",            new THREE.Vector3(O.x - 3.4, 0, O.z), 0.8, 0, 29, 10);
@@ -215,10 +208,8 @@ export class WorldScene extends BaseScene {
 
   private _buildLeftForest(): void {
     const O = ZONE.LEFT_FOREST;
-
     this._addPlane(180, 180, 0x141f0e, O);
 
-    // ── FIX LAG: 4 wisps → chỉ 2 PointLight, còn 2 dùng mesh emissive thôi ─
     [
       new THREE.Vector3(O.x - 15, 1.5, O.z - 20),
       new THREE.Vector3(O.x + 20, 2.0, O.z + 30),
@@ -234,7 +225,6 @@ export class WorldScene extends BaseScene {
       orb.position.copy(pos);
       this.scene.add(orb);
 
-      // Chỉ add PointLight cho 2 wisp đầu
       if (i < 2) {
         const light = new THREE.PointLight(0x22ff88, 1.8, 14);
         light.position.copy(pos);
@@ -243,15 +233,13 @@ export class WorldScene extends BaseScene {
       }
     });
 
-    this._instanceProps("bush", O, 15, 80);
-
+    this._instanceProp("bush", O, 15, 80);
     this._placeProp("Big-stone", new THREE.Vector3(O.x - 20, 0, O.z - 20), 2.0);
     this._placeProp("bo_ba_nam", new THREE.Vector3(O.x + 30, 0, O.z + 10), 3.0);
   }
 
   private _buildRightPlatform(): void {
     const O = ZONE.RIGHT_PLATFORM;
-
     this._addPlane(180, 180, 0x1a140f, O, true);
 
     const platform = new THREE.Mesh(
@@ -262,12 +250,9 @@ export class WorldScene extends BaseScene {
     platform.receiveShadow = true;
     this.scene.add(platform);
 
-    // ── FIX LAG: 4 rune lights → chỉ 2 PointLight ────────────────────────────
     [
       new THREE.Vector3(O.x - 18, 0.3, O.z - 18),
       new THREE.Vector3(O.x + 18, 0.3, O.z + 22),
-      new THREE.Vector3(O.x - 28, 0.3, O.z + 10),
-      new THREE.Vector3(O.x + 10, 0.3, O.z - 30),
     ].forEach((pos, i) => {
       const stone = new THREE.Mesh(
         new THREE.DodecahedronGeometry(0.4, 0),
@@ -278,12 +263,10 @@ export class WorldScene extends BaseScene {
       stone.position.copy(pos);
       this.scene.add(stone);
 
-      if (i < 2) {
-        const rl = new THREE.PointLight(0x6622ff, 1.2, 8);
-        rl.position.copy(pos).add(new THREE.Vector3(0, 0.5, 0));
-        this.scene.add(rl);
-        this.wisps.push({ light: rl, phase: i * 2.1 + 5, base: pos.clone() });
-      }
+      const rl = new THREE.PointLight(0x6622ff, 1.2, 8);
+      rl.position.copy(pos).add(new THREE.Vector3(0, 0.5, 0));
+      this.scene.add(rl);
+      this.wisps.push({ light: rl, phase: i * 2.1 + 5, base: pos.clone() });
     });
 
     this._placeProp("stone_pillar",            new THREE.Vector3(O.x,      0, O.z),      2.0);
@@ -294,7 +277,6 @@ export class WorldScene extends BaseScene {
 
   private _buildBossArena(): void {
     const O = ZONE.BOSS_ARENA;
-
     this._addPlane(200, 200, 0x0d0808, O);
 
     const arena = new THREE.Mesh(
@@ -331,7 +313,6 @@ export class WorldScene extends BaseScene {
     this.centralFire.position.set(O.x, 4, O.z);
     this.scene.add(this.centralFire);
 
-    // ── FIX LAG: 8 pillar lights → 4 (mỗi 2 cột share 1 light ở giữa) ───────
     const pillarMat = new THREE.MeshStandardMaterial({ color: 0x1a0f0f, roughness: 0.6, metalness: 0.6 });
     for (let i = 0; i < 8; i++) {
       const angle = (i / 8) * Math.PI * 2;
@@ -352,9 +333,8 @@ export class WorldScene extends BaseScene {
       fb.position.set(px, 6.3, pz);
       this.scene.add(fb);
 
-      // Chỉ add PointLight cho cột chẵn (4 lights thay vì 8)
       if (i % 2 === 0) {
-        const fl = new THREE.PointLight(0xff6600, 2.4, 18); // range rộng hơn để bù
+        const fl = new THREE.PointLight(0xff6600, 2.4, 18);
         fl.position.set(px, 6.5, pz);
         this.scene.add(fl);
         this.pillarFires.push({ light: fl, phase: i * 0.785 });
@@ -372,10 +352,7 @@ export class WorldScene extends BaseScene {
   // HELPERS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  private _addPlane(
-    w: number, h: number, color: number,
-    center: THREE.Vector3, flatShading = false
-  ): void {
+  private _addPlane(w: number, h: number, color: number, center: THREE.Vector3, flatShading = false): void {
     const mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(w, h),
       new THREE.MeshStandardMaterial({ color, roughness: 1.0, flatShading })
@@ -386,11 +363,7 @@ export class WorldScene extends BaseScene {
     this.scene.add(mesh);
   }
 
-  /**
-   * addLight = false  → chỉ mesh đuốc, không tốn light budget
-   * addLight = true   → thêm PointLight (dùng tiết kiệm)
-   */
-  private _addTorch(pos: THREE.Vector3, addLight = false): void {
+  private _addTorchMesh(pos: THREE.Vector3): void {
     const pole = new THREE.Mesh(
       new THREE.CylinderGeometry(0.06, 0.08, 2.2, 6),
       new THREE.MeshStandardMaterial({ color: 0x3a2510, roughness: 1 })
@@ -401,76 +374,45 @@ export class WorldScene extends BaseScene {
 
     const head = new THREE.Mesh(
       new THREE.CylinderGeometry(0.12, 0.10, 0.25, 8),
-      new THREE.MeshStandardMaterial({
-        color: 0x8b4500, roughness: 0.7,
-        emissive: new THREE.Color(0xff4400), emissiveIntensity: 0.6,
-      })
+      new THREE.MeshStandardMaterial({ color: 0x8b4500, roughness: 0.7, emissive: new THREE.Color(0xff4400), emissiveIntensity: 0.6 })
     );
     head.position.copy(pos).add(new THREE.Vector3(0, 2.4, 0));
     this.scene.add(head);
-
-    if (addLight) {
-      const light = new THREE.PointLight(0xff6a1a, 3.0, 16);
-      light.position.copy(pos).add(new THREE.Vector3(0, 2.6, 0));
-      this.scene.add(light);
-      this.torches.push({ light, phase: this.torches.length * 0.73 });
-    }
   }
 
-  private _placeProp(
-    name: string, pos: THREE.Vector3,
-    scale = 1.0, rotY = 0,
-    repeatZ = 0, stepZ = 0
-  ): void {
+  private _placeProp(name: string, pos: THREE.Vector3, scale = 1.0, rotY = 0, repeatZ = 0, stepZ = 0): void {
     const src = this.propCache.get(name);
     if (!src) return;
-
     const count = repeatZ > 0 ? repeatZ : 1;
     for (let i = 0; i < count; i++) {
       const clone = src.clone();
       clone.position.copy(pos).add(new THREE.Vector3(0, 0, i * stepZ));
       clone.scale.setScalar(scale);
       clone.rotation.y = rotY;
-      clone.traverse((c) => {
-        if ((c as THREE.Mesh).isMesh) {
-          c.castShadow    = true;
-          c.receiveShadow = true;
-        }
-      });
+      clone.traverse((c) => { if ((c as THREE.Mesh).isMesh) { c.castShadow = true; c.receiveShadow = true; } });
       this.scene.add(clone);
     }
   }
 
-  private _placePropMulti(
-    name: string, positions: THREE.Vector3[], scale = 1.0
-  ): void {
+  private _placePropMulti(name: string, positions: THREE.Vector3[], scale = 1.0): void {
     positions.forEach((pos) => this._placeProp(name, pos, scale));
   }
 
-  private _instanceProps(name: string, center: THREE.Vector3, count: number, spread: number): void {
+  private _instanceProp(name: string, center: THREE.Vector3, count: number, spread: number): void {
     const src = this.propCache.get(name);
     if (!src) return;
-
     const dummy = new THREE.Object3D();
     src.traverse((child) => {
       if (!(child as THREE.Mesh).isMesh) return;
       const mesh = child as THREE.Mesh;
-      // Clone material để tránh shared reference bị dispose ảnh hưởng cả batch
-      const mat = Array.isArray(mesh.material)
-        ? mesh.material.map(m => m.clone())
-        : mesh.material.clone();
+      const mat = Array.isArray(mesh.material) ? mesh.material.map(m => m.clone()) : mesh.material.clone();
       const im = new THREE.InstancedMesh(mesh.geometry, mat, count);
       im.receiveShadow = true;
       im.frustumCulled = true;
-
       for (let i = 0; i < count; i++) {
         const angle = (i / count) * Math.PI * 2 + Math.random() * 0.5;
-        const r     = 10 + Math.random() * spread;
-        dummy.position.set(
-          center.x + Math.cos(angle) * r,
-          0,
-          center.z + Math.sin(angle) * r
-        );
+        const r = 10 + Math.random() * spread;
+        dummy.position.set(center.x + Math.cos(angle) * r, 0, center.z + Math.sin(angle) * r);
         dummy.scale.setScalar(1.2 + Math.random() * 0.5);
         dummy.rotation.y = Math.random() * Math.PI * 2;
         dummy.updateMatrix();
@@ -483,75 +425,21 @@ export class WorldScene extends BaseScene {
 
   // ─── Spawn enemies ─────────────────────────────────────────────────────────
   private _spawnEnemies(): void {
-    // Hub — scale giữ nguyên 4.0 vì đó là đúng với model này
-    this.enemyManager.spawn(
-      [new THREE.Vector3(12, 0, 38), new THREE.Vector3(-12, 0, 38)],
-      { ...GOBLIN_CONFIG, chaseRange: 15 }
-    );
-    // MainRoad
-    this.enemyManager.spawn(
-      [new THREE.Vector3(ZONE.MAIN_ROAD.x - 4, 0, ZONE.MAIN_ROAD.z - 60),
-       new THREE.Vector3(ZONE.MAIN_ROAD.x + 4, 0, ZONE.MAIN_ROAD.z + 30)],
-      { ...GOBLIN_CONFIG, chaseRange: 18 }
-    );
-    // LeftForest
-    this.enemyManager.spawn(
-      [new THREE.Vector3(ZONE.LEFT_FOREST.x + 15, 0, ZONE.LEFT_FOREST.z + 10),
-       new THREE.Vector3(ZONE.LEFT_FOREST.x - 10, 0, ZONE.LEFT_FOREST.z - 15)],
-      { ...GOBLIN_CONFIG, chaseRange: 20 }
-    );
-    // RightPlatform
-    this.enemyManager.spawn(
-      [new THREE.Vector3(ZONE.RIGHT_PLATFORM.x + 20, 0, ZONE.RIGHT_PLATFORM.z + 15),
-       new THREE.Vector3(ZONE.RIGHT_PLATFORM.x - 30, 0, ZONE.RIGHT_PLATFORM.z + 20)],
-      { ...GOBLIN_CONFIG, chaseRange: 18 }
-    );
-    // Boss — to gấp đôi goblin thường
-    this.enemyManager.spawn(
-      [new THREE.Vector3(ZONE.BOSS_ARENA.x, 0, ZONE.BOSS_ARENA.z - 12)],
-      { ...GOBLIN_CONFIG, scale: 8.0, maxHp: 500, chaseRange: 50, attackDamage: 25, patrolRadius: 0 }
-    );
+    this.enemyManager.spawn([new THREE.Vector3(12, 0, 38), new THREE.Vector3(-12, 0, 38)], { ...GOBLIN_CONFIG, chaseRange: 15 });
+    this.enemyManager.spawn([new THREE.Vector3(ZONE.MAIN_ROAD.x - 4, 0, ZONE.MAIN_ROAD.z - 60), new THREE.Vector3(ZONE.MAIN_ROAD.x + 4, 0, ZONE.MAIN_ROAD.z + 30)], { ...GOBLIN_CONFIG, chaseRange: 18 });
+    this.enemyManager.spawn([new THREE.Vector3(ZONE.LEFT_FOREST.x + 15, 0, ZONE.LEFT_FOREST.z + 10), new THREE.Vector3(ZONE.LEFT_FOREST.x - 10, 0, ZONE.LEFT_FOREST.z - 15)], { ...GOBLIN_CONFIG, chaseRange: 20 });
+    this.enemyManager.spawn([new THREE.Vector3(ZONE.RIGHT_PLATFORM.x + 20, 0, ZONE.RIGHT_PLATFORM.z + 15), new THREE.Vector3(ZONE.RIGHT_PLATFORM.x - 30, 0, ZONE.RIGHT_PLATFORM.z + 20)], { ...GOBLIN_CONFIG, chaseRange: 18 });
+    this.enemyManager.spawn([new THREE.Vector3(ZONE.BOSS_ARENA.x, 0, ZONE.BOSS_ARENA.z - 12)], { ...GOBLIN_CONFIG, scale: 8.0, maxHp: 500, chaseRange: 50, attackDamage: 25, patrolRadius: 0 });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ANIMATORS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  private _animateTorches(dt: number): void {
-    this.torches.forEach((t) => {
-      t.phase += dt * 8;
-      t.light.intensity = 3.0 * (1 + Math.sin(t.phase * 1.3) * 0.18 + Math.sin(t.phase * 2.7) * 0.08);
-    });
-  }
+  private _animateTorches(dt: number): void { this.torches.forEach((t) => { t.phase += dt * 8; t.light.intensity = 3.0 * (1 + Math.sin(t.phase * 1.3) * 0.18 + Math.sin(t.phase * 2.7) * 0.08); }); }
+  private _animateWisps(dt: number): void { this.wisps.forEach((w) => { w.phase += dt * 1.2; w.light.position.set(w.base.x + Math.sin(w.phase * 0.7) * 1.2, w.base.y + Math.sin(w.phase) * 0.5, w.base.z + Math.cos(w.phase * 0.5) * 1.0); w.light.intensity = 1.8 * (0.8 + Math.sin(w.phase * 2.1) * 0.25); }); }
+  private _animatePillarFires(dt: number): void { this.pillarFires.forEach((p) => { p.phase += dt * 9; p.light.intensity = 1.8 * (1 + Math.sin(p.phase) * 0.25 + Math.sin(p.phase * 2.1) * 0.1); }); }
+  private _animateCentralFire(): void { if (!this.centralFire) return; const t = this.elapsed; this.centralFire.intensity = 5.0 * (1 + Math.sin(t * 7.3) * 0.3 + Math.sin(t * 13.1) * 0.15); }
 
-  private _animateWisps(dt: number): void {
-    this.wisps.forEach((w) => {
-      w.phase += dt * 1.2;
-      w.light.position.set(
-        w.base.x + Math.sin(w.phase * 0.7) * 1.2,
-        w.base.y + Math.sin(w.phase) * 0.5,
-        w.base.z + Math.cos(w.phase * 0.5) * 1.0,
-      );
-      w.light.intensity = 1.8 * (0.8 + Math.sin(w.phase * 2.1) * 0.25);
-    });
-  }
-
-  private _animatePillarFires(dt: number): void {
-    this.pillarFires.forEach((p) => {
-      p.phase += dt * 9;
-      p.light.intensity = 1.8 * (1 + Math.sin(p.phase) * 0.25 + Math.sin(p.phase * 2.1) * 0.1);
-    });
-  }
-
-  private _animateCentralFire(): void {
-    if (!this.centralFire) return;
-    const t = this.elapsed;
-    this.centralFire.intensity = 5.0 * (1 + Math.sin(t * 7.3) * 0.3 + Math.sin(t * 13.1) * 0.15);
-  }
-
-  // ─── Event handler ──────────────────────────────────────────────────────────
-  private _onPlayerAttack = (data: { origin: THREE.Vector3; range: number; damage: number }) => {
-    this.enemyManager?.hitInRange(data.origin, data.range, data.damage);
-  };
-          }
-       
+  private _onPlayerAttack = (data: { origin: THREE.Vector3; range: number; damage: number }) => { this.enemyManager?.hitInRange(data.origin, data.range, data.damage); };
+      }
