@@ -12,13 +12,12 @@ import { optimizeHubScene } from "./hub/HubCollisionOptimizer";
 import { createLeafParticles, tickLeafParticles, type LeafParticleSystem } from "./hub/HubParticles";
 
 // ─── Zone offsets ─────────────────────────────────────────────────────────────
-// Hub ở trung tâm (0,0,0) — các khu cách nhau đủ xa để không overlap
 const ZONE = {
   HUB:            new THREE.Vector3(   0, 0,    0),
-  MAIN_ROAD:      new THREE.Vector3(   0, 0,  180),  // Bắc
-  LEFT_FOREST:    new THREE.Vector3(-180, 0,    0),  // Tây
-  RIGHT_PLATFORM: new THREE.Vector3( 180, 0,    0),  // Đông
-  BOSS_ARENA:     new THREE.Vector3(   0, 0, -220),  // Nam
+  MAIN_ROAD:      new THREE.Vector3(   0, 0,  180),
+  LEFT_FOREST:    new THREE.Vector3(-180, 0,    0),
+  RIGHT_PLATFORM: new THREE.Vector3( 180, 0,    0),
+  BOSS_ARENA:     new THREE.Vector3(   0, 0, -220),
 } as const;
 
 // ─── WorldScene ───────────────────────────────────────────────────────────────
@@ -35,15 +34,20 @@ export class WorldScene extends BaseScene {
   private playerRef!:    THREE.Object3D;
   private cameraRef!:    THREE.Camera;
 
-  // Đuốc + wisp để animate
-  private torches:  { light: THREE.PointLight; phase: number }[] = [];
-  private wisps:    { light: THREE.PointLight; phase: number; base: THREE.Vector3 }[] = [];
+  // Đuốc + wisp để animate — giảm số lượng light tối đa
+  private torches:     { light: THREE.PointLight; phase: number }[] = [];
+  private wisps:       { light: THREE.PointLight; phase: number; base: THREE.Vector3 }[] = [];
   private pillarFires: { light: THREE.PointLight; phase: number }[] = [];
   private centralFire!: THREE.PointLight;
+
+  // ── Throttle: chỉ animate lights mỗi 2 frame ──────────────────────────────
+  private _frameCount = 0;
 
   constructor() {
     super("WorldScene");
     this.scene = new THREE.Scene();
+    // Fog để cull geometry xa — giảm overdraw đáng kể trên map lớn
+    this.scene.fog = new THREE.Fog(0x0d0b0a, 80, 320);
   }
 
   public setPlayer(p: THREE.Object3D) { this.playerRef = p; }
@@ -55,26 +59,21 @@ export class WorldScene extends BaseScene {
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
   protected async onLoad(): Promise<void> {
-    // 1. Load tất cả assets song song
     await Promise.all([
       this._loadTreeAssets(),
       this._loadPropAssets(),
     ]);
 
-    // 2. Lighting chung — tone Hub, bao phủ toàn map
     setupLighting(this.scene);
 
-    // 3. Build từng khu
     this._buildHub();
     this._buildMainRoad();
     this._buildLeftForest();
     this._buildRightPlatform();
     this._buildBossArena();
 
-    // 4. Particles Hub
     this.particleSystem = createLeafParticles(this.scene);
 
-    // 5. Spawn quái
     this.enemyManager = new EnemyManager(this.scene, document.body);
     this._spawnEnemies();
 
@@ -85,12 +84,17 @@ export class WorldScene extends BaseScene {
   protected onUpdate(dt: number): void {
     if (!this.playerRef || !this.cameraRef) return;
     this.elapsed += dt;
+    this._frameCount++;
 
     if (this.particleSystem) tickLeafParticles(this.particleSystem, dt);
-    this._animateTorches(dt);
-    this._animateWisps(dt);
-    this._animatePillarFires(dt);
-    this._animateCentralFire();
+
+    // Animate lights mỗi 2 frame — mắt người không phân biệt được
+    if (this._frameCount % 2 === 0) {
+      this._animateTorches(dt * 2);
+      this._animateWisps(dt * 2);
+      this._animatePillarFires(dt * 2);
+      this._animateCentralFire();
+    }
 
     const dmg = this.enemyManager?.update(dt, this.playerRef.position, this.cameraRef) ?? 0;
     if (dmg > 0) eventBus.emit(GameEvents.PLAYER_DAMAGE, { amount: dmg });
@@ -103,6 +107,19 @@ export class WorldScene extends BaseScene {
     this.treeCache.clear();
     this.propCache.clear();
     this.particleSystem = null;
+
+    // Dispose tất cả lights — tránh memory leak
+    [...this.torches, ...this.wisps, ...this.pillarFires].forEach(({ light }) => {
+      this.scene.remove(light);
+      light.dispose();
+    });
+    this.torches     = [];
+    this.wisps       = [];
+    this.pillarFires = [];
+    if (this.centralFire) {
+      this.scene.remove(this.centralFire);
+      this.centralFire.dispose();
+    }
   }
 
   public update(dt: number): void { this.onUpdate(dt); }
@@ -142,11 +159,10 @@ export class WorldScene extends BaseScene {
   // ZONE BUILDERS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /** Hub — dùng lại optimizeHubScene với offset (0,0,0) */
   private _buildHub(): void {
-    // Ground
+    // Ground lớn bao phủ toàn map — không để void giữa các khu
     const ground = new THREE.Mesh(
-      new THREE.CircleGeometry(80, 64),
+      new THREE.PlaneGeometry(800, 800),
       new THREE.MeshStandardMaterial({ color: 0x3d2b1f, roughness: 0.95, flatShading: true })
     );
     ground.rotation.x = -Math.PI / 2;
@@ -166,18 +182,14 @@ export class WorldScene extends BaseScene {
       this.scene.add(p);
     });
 
-    // Cây + bụi qua InstancedMesh
     optimizeHubScene(this.scene, this.treeCache);
   }
 
-  /** MainRoad — đường thẳng lên phía Bắc */
   private _buildMainRoad(): void {
     const O = ZONE.MAIN_ROAD;
 
-    // Nền đất
     this._addPlane(120, 360, 0x1c1a0f, O);
 
-    // Đường đất
     const road = new THREE.Mesh(
       new THREE.PlaneGeometry(6, 360),
       new THREE.MeshStandardMaterial({ color: 0x2a1f0e, roughness: 0.95 })
@@ -186,27 +198,27 @@ export class WorldScene extends BaseScene {
     road.position.set(O.x, 0.02, O.z);
     this.scene.add(road);
 
-    // Đuốc 2 bên
+    // ── FIX LAG: cứ 50 units mới add 1 PointLight thay vì mỗi 25 units ──────
+    // Tổng light giảm từ 26 → 7 cho MainRoad
     for (let dz = -150; dz <= 150; dz += 25) {
-      this._addTorch(new THREE.Vector3(O.x - 4, 0, O.z + dz));
-      this._addTorch(new THREE.Vector3(O.x + 4, 0, O.z + dz));
+      const addLight = dz % 50 === 0;
+      this._addTorch(new THREE.Vector3(O.x - 4, 0, O.z + dz), addLight);
+      this._addTorch(new THREE.Vector3(O.x + 4, 0, O.z + dz), addLight);
     }
 
-    // Props — hàng rào, nhà, xe ngựa
-    this._placeProp("stylized_fence",          new THREE.Vector3(O.x - 3.4, 0, O.z), 0.8, 0, 29, 10);
-    this._placeProp("stylized_fence",          new THREE.Vector3(O.x + 3.4, 0, O.z), 0.8, 0, 29, 10);
-    this._placeProp("stylized_medieval_house", new THREE.Vector3(O.x - 14,  0, O.z - 80), 2.0);
-    this._placeProp("stylized_medieval_house_2", new THREE.Vector3(O.x + 14, 0, O.z + 70), 2.0);
-    this._placeProp("stylized_wooden_wagon",   new THREE.Vector3(O.x - 5,   0, O.z - 40), 1.5);
+    this._placeProp("stylized_fence",            new THREE.Vector3(O.x - 3.4, 0, O.z), 0.8, 0, 29, 10);
+    this._placeProp("stylized_fence",            new THREE.Vector3(O.x + 3.4, 0, O.z), 0.8, 0, 29, 10);
+    this._placeProp("stylized_medieval_house",   new THREE.Vector3(O.x - 14,  0, O.z - 80), 2.0);
+    this._placeProp("stylized_medieval_house_2", new THREE.Vector3(O.x + 14,  0, O.z + 70), 2.0);
+    this._placeProp("stylized_wooden_wagon",     new THREE.Vector3(O.x - 5,   0, O.z - 40), 1.5);
   }
 
-  /** LeftForest — rừng bí ẩn phía Tây */
   private _buildLeftForest(): void {
     const O = ZONE.LEFT_FOREST;
 
     this._addPlane(180, 180, 0x141f0e, O);
 
-    // Wisp lights
+    // ── FIX LAG: 4 wisps → chỉ 2 PointLight, còn 2 dùng mesh emissive thôi ─
     [
       new THREE.Vector3(O.x - 15, 1.5, O.z - 20),
       new THREE.Vector3(O.x + 20, 2.0, O.z + 30),
@@ -222,27 +234,26 @@ export class WorldScene extends BaseScene {
       orb.position.copy(pos);
       this.scene.add(orb);
 
-      const light = new THREE.PointLight(0x22ff88, 1.8, 14);
-      light.position.copy(pos);
-      this.scene.add(light);
-      this.wisps.push({ light, phase: i * 1.57, base: pos.clone() });
+      // Chỉ add PointLight cho 2 wisp đầu
+      if (i < 2) {
+        const light = new THREE.PointLight(0x22ff88, 1.8, 14);
+        light.position.copy(pos);
+        this.scene.add(light);
+        this.wisps.push({ light, phase: i * 1.57, base: pos.clone() });
+      }
     });
 
-    // Bụi cây — InstancedMesh
     this._instanceProps("bush", O, 15, 80);
 
-    // Tảng đá + tượng
-    this._placeProp("Big-stone",  new THREE.Vector3(O.x - 20, 0, O.z - 20), 2.0);
-    this._placeProp("bo_ba_nam",  new THREE.Vector3(O.x + 30, 0, O.z + 10), 3.0);
+    this._placeProp("Big-stone", new THREE.Vector3(O.x - 20, 0, O.z - 20), 2.0);
+    this._placeProp("bo_ba_nam", new THREE.Vector3(O.x + 30, 0, O.z + 10), 3.0);
   }
 
-  /** RightPlatform — khu đá phía Đông */
   private _buildRightPlatform(): void {
     const O = ZONE.RIGHT_PLATFORM;
 
     this._addPlane(180, 180, 0x1a140f, O, true);
 
-    // Platform trung tâm
     const platform = new THREE.Mesh(
       new THREE.CylinderGeometry(18, 22, 0.4, 7),
       new THREE.MeshStandardMaterial({ color: 0x1f1820, roughness: 0.95, flatShading: true })
@@ -251,7 +262,7 @@ export class WorldScene extends BaseScene {
     platform.receiveShadow = true;
     this.scene.add(platform);
 
-    // Rune stones
+    // ── FIX LAG: 4 rune lights → chỉ 2 PointLight ────────────────────────────
     [
       new THREE.Vector3(O.x - 18, 0.3, O.z - 18),
       new THREE.Vector3(O.x + 18, 0.3, O.z + 22),
@@ -266,27 +277,26 @@ export class WorldScene extends BaseScene {
       );
       stone.position.copy(pos);
       this.scene.add(stone);
-      const rl = new THREE.PointLight(0x6622ff, 1.2, 8);
-      rl.position.copy(pos).add(new THREE.Vector3(0, 0.5, 0));
-      this.scene.add(rl);
-      this.wisps.push({ light: rl, phase: i * 2.1 + 5, base: pos.clone() });
+
+      if (i < 2) {
+        const rl = new THREE.PointLight(0x6622ff, 1.2, 8);
+        rl.position.copy(pos).add(new THREE.Vector3(0, 0.5, 0));
+        this.scene.add(rl);
+        this.wisps.push({ light: rl, phase: i * 2.1 + 5, base: pos.clone() });
+      }
     });
 
-    // Props
     this._placeProp("stone_pillar",            new THREE.Vector3(O.x,      0, O.z),      2.0);
     this._placeProp("crystal_hong",            new THREE.Vector3(O.x + 20, 0, O.z - 20), 1.5);
     this._placeProp("crystal_cluster",         new THREE.Vector3(O.x - 25, 0, O.z + 25), 2.0);
     this._placeProp("old_ropebridge_low_poly", new THREE.Vector3(O.x,      0, O.z - 40), 1.5);
   }
 
-  /** BossArena — đấu trường phía Nam */
   private _buildBossArena(): void {
     const O = ZONE.BOSS_ARENA;
 
-    // Nền tối
     this._addPlane(200, 200, 0x0d0808, O);
 
-    // Sàn đấu
     const arena = new THREE.Mesh(
       new THREE.CircleGeometry(40, 72),
       new THREE.MeshStandardMaterial({ color: 0x1a1010, roughness: 0.75, metalness: 0.25 })
@@ -296,7 +306,6 @@ export class WorldScene extends BaseScene {
     arena.receiveShadow = true;
     this.scene.add(arena);
 
-    // Vành đai đỏ
     const border = new THREE.Mesh(
       new THREE.RingGeometry(39, 41.5, 72),
       new THREE.MeshStandardMaterial({
@@ -308,7 +317,6 @@ export class WorldScene extends BaseScene {
     border.position.set(O.x, 0.03, O.z);
     this.scene.add(border);
 
-    // Lửa trung tâm
     const fireBall = new THREE.Mesh(
       new THREE.SphereGeometry(1.2, 12, 12),
       new THREE.MeshStandardMaterial({
@@ -323,7 +331,7 @@ export class WorldScene extends BaseScene {
     this.centralFire.position.set(O.x, 4, O.z);
     this.scene.add(this.centralFire);
 
-    // 8 cột lửa vành đai
+    // ── FIX LAG: 8 pillar lights → 4 (mỗi 2 cột share 1 light ở giữa) ───────
     const pillarMat = new THREE.MeshStandardMaterial({ color: 0x1a0f0f, roughness: 0.6, metalness: 0.6 });
     for (let i = 0; i < 8; i++) {
       const angle = (i / 8) * Math.PI * 2;
@@ -344,13 +352,15 @@ export class WorldScene extends BaseScene {
       fb.position.set(px, 6.3, pz);
       this.scene.add(fb);
 
-      const fl = new THREE.PointLight(0xff6600, 1.8, 14);
-      fl.position.set(px, 6.5, pz);
-      this.scene.add(fl);
-      this.pillarFires.push({ light: fl, phase: i * 0.785 });
+      // Chỉ add PointLight cho cột chẵn (4 lights thay vì 8)
+      if (i % 2 === 0) {
+        const fl = new THREE.PointLight(0xff6600, 2.4, 18); // range rộng hơn để bù
+        fl.position.set(px, 6.5, pz);
+        this.scene.add(fl);
+        this.pillarFires.push({ light: fl, phase: i * 0.785 });
+      }
     }
 
-    // Đầu lâu
     this._placePropMulti("pile_of_skulls", [
       new THREE.Vector3(O.x + 10, 0, O.z + 10),
       new THREE.Vector3(O.x - 10, 0, O.z + 15),
@@ -376,7 +386,11 @@ export class WorldScene extends BaseScene {
     this.scene.add(mesh);
   }
 
-  private _addTorch(pos: THREE.Vector3): void {
+  /**
+   * addLight = false  → chỉ mesh đuốc, không tốn light budget
+   * addLight = true   → thêm PointLight (dùng tiết kiệm)
+   */
+  private _addTorch(pos: THREE.Vector3, addLight = false): void {
     const pole = new THREE.Mesh(
       new THREE.CylinderGeometry(0.06, 0.08, 2.2, 6),
       new THREE.MeshStandardMaterial({ color: 0x3a2510, roughness: 1 })
@@ -395,13 +409,14 @@ export class WorldScene extends BaseScene {
     head.position.copy(pos).add(new THREE.Vector3(0, 2.4, 0));
     this.scene.add(head);
 
-    const light = new THREE.PointLight(0xff6a1a, 3.0, 16);
-    light.position.copy(pos).add(new THREE.Vector3(0, 2.6, 0));
-    this.scene.add(light);
-    this.torches.push({ light, phase: this.torches.length * 0.73 });
+    if (addLight) {
+      const light = new THREE.PointLight(0xff6a1a, 3.0, 16);
+      light.position.copy(pos).add(new THREE.Vector3(0, 2.6, 0));
+      this.scene.add(light);
+      this.torches.push({ light, phase: this.torches.length * 0.73 });
+    }
   }
 
-  /** Đặt 1 prop model tại vị trí */
   private _placeProp(
     name: string, pos: THREE.Vector3,
     scale = 1.0, rotY = 0,
@@ -426,14 +441,12 @@ export class WorldScene extends BaseScene {
     }
   }
 
-  /** Đặt 1 prop tại nhiều vị trí */
   private _placePropMulti(
     name: string, positions: THREE.Vector3[], scale = 1.0
   ): void {
     positions.forEach((pos) => this._placeProp(name, pos, scale));
   }
 
-  /** InstancedMesh cho bụi cây trong rừng */
   private _instanceProps(name: string, center: THREE.Vector3, count: number, spread: number): void {
     const src = this.propCache.get(name);
     if (!src) return;
@@ -442,8 +455,13 @@ export class WorldScene extends BaseScene {
     src.traverse((child) => {
       if (!(child as THREE.Mesh).isMesh) return;
       const mesh = child as THREE.Mesh;
-      const im = new THREE.InstancedMesh(mesh.geometry, mesh.material, count);
+      // Clone material để tránh shared reference bị dispose ảnh hưởng cả batch
+      const mat = Array.isArray(mesh.material)
+        ? mesh.material.map(m => m.clone())
+        : mesh.material.clone();
+      const im = new THREE.InstancedMesh(mesh.geometry, mat, count);
       im.receiveShadow = true;
+      im.frustumCulled = true;
 
       for (let i = 0; i < count; i++) {
         const angle = (i / count) * Math.PI * 2 + Math.random() * 0.5;
@@ -465,33 +483,33 @@ export class WorldScene extends BaseScene {
 
   // ─── Spawn enemies ─────────────────────────────────────────────────────────
   private _spawnEnemies(): void {
-    // Hub
+    // Hub — scale giữ nguyên 4.0 vì đó là đúng với model này
     this.enemyManager.spawn(
       [new THREE.Vector3(12, 0, 38), new THREE.Vector3(-12, 0, 38)],
-      { ...GOBLIN_CONFIG, scale: 4.0, chaseRange: 15 }
+      { ...GOBLIN_CONFIG, chaseRange: 15 }
     );
     // MainRoad
     this.enemyManager.spawn(
       [new THREE.Vector3(ZONE.MAIN_ROAD.x - 4, 0, ZONE.MAIN_ROAD.z - 60),
        new THREE.Vector3(ZONE.MAIN_ROAD.x + 4, 0, ZONE.MAIN_ROAD.z + 30)],
-      { ...GOBLIN_CONFIG, scale: 4.0, chaseRange: 18 }
+      { ...GOBLIN_CONFIG, chaseRange: 18 }
     );
     // LeftForest
     this.enemyManager.spawn(
       [new THREE.Vector3(ZONE.LEFT_FOREST.x + 15, 0, ZONE.LEFT_FOREST.z + 10),
        new THREE.Vector3(ZONE.LEFT_FOREST.x - 10, 0, ZONE.LEFT_FOREST.z - 15)],
-      { ...GOBLIN_CONFIG, scale: 4.5, chaseRange: 20 }
+      { ...GOBLIN_CONFIG, chaseRange: 20 }
     );
     // RightPlatform
     this.enemyManager.spawn(
       [new THREE.Vector3(ZONE.RIGHT_PLATFORM.x + 20, 0, ZONE.RIGHT_PLATFORM.z + 15),
        new THREE.Vector3(ZONE.RIGHT_PLATFORM.x - 30, 0, ZONE.RIGHT_PLATFORM.z + 20)],
-      { ...GOBLIN_CONFIG, scale: 4.0, chaseRange: 18 }
+      { ...GOBLIN_CONFIG, chaseRange: 18 }
     );
-    // Boss
+    // Boss — to gấp đôi goblin thường
     this.enemyManager.spawn(
       [new THREE.Vector3(ZONE.BOSS_ARENA.x, 0, ZONE.BOSS_ARENA.z - 12)],
-      { ...GOBLIN_CONFIG, scale: 7.0, maxHp: 500, chaseRange: 50, attackDamage: 25, patrolRadius: 0 }
+      { ...GOBLIN_CONFIG, scale: 8.0, maxHp: 500, chaseRange: 50, attackDamage: 25, patrolRadius: 0 }
     );
   }
 
@@ -535,4 +553,5 @@ export class WorldScene extends BaseScene {
   private _onPlayerAttack = (data: { origin: THREE.Vector3; range: number; damage: number }) => {
     this.enemyManager?.hitInRange(data.origin, data.range, data.damage);
   };
-    }
+          }
+       
