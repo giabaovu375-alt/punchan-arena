@@ -3,28 +3,21 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ANIMATION CACHE — dùng chung cho tất cả Enemy instances
-// Tránh load lại cùng 1 FBX nhiều lần (10 goblin = 40 requests → 4 requests)
+// ANIMATION CACHE
 // ─────────────────────────────────────────────────────────────────────────────
 const _animCache = new Map<string, Promise<THREE.AnimationClip | null>>();
-
 function loadClipCached(url: string): Promise<THREE.AnimationClip | null> {
   if (_animCache.has(url)) return _animCache.get(url)!;
   const p = new Promise<THREE.AnimationClip | null>((res) => {
-    new FBXLoader().load(
-      url,
-      fbx => res(fbx.animations[0] ?? null),
-      undefined,
-      () => { console.warn(`⚠️ Clip failed: ${url}`); res(null); },
-    );
+    new FBXLoader().load(url, fbx => res(fbx.animations[0] ?? null), undefined,
+      () => { console.warn(`⚠️ Clip failed: ${url}`); res(null); });
   });
   _animCache.set(url, p);
   return p;
 }
 
-// MODEL CACHE — dùng chung skeleton/geometry, clone per instance
+// MODEL CACHE
 const _modelCache = new Map<string, Promise<THREE.Group>>();
-
 function loadModelCached(url: string): Promise<THREE.Group> {
   if (_modelCache.has(url)) return _modelCache.get(url)!;
   const p = new Promise<THREE.Group>((res, rej) => {
@@ -47,6 +40,8 @@ export interface EnemyConfig {
   animWalk:        string;
   animAttack:      string;
   animDeath:       string;
+  /** Scale thực tế của model trong scene (bình thường ~1.0).
+   *  Đây KHÔNG phải FBX unit scale — unit scale được tự tính từ bounding box. */
   scale?:          number;
   maxHp?:          number;
   moveSpeed?:      number;
@@ -63,7 +58,9 @@ export const GOBLIN_CONFIG: EnemyConfig = {
   animWalk:       "/animation/animation-goblin/Walking.fbx",
   animAttack:     "/animation/animation-goblin/Standing Melee Attack Backhand.fbx",
   animDeath:      "/animation/animation-goblin/Zombie Reaction Hit.fbx",
-  scale:          4.0,
+  // scale: 1.0 = kích thước bình thường trong scene
+  // FBX unit (cm→m) được auto-normalize trong loadAssets()
+  scale:          1.0,
   maxHp:          150,
   moveSpeed:      2.2,
   chaseRange:     15,
@@ -98,14 +95,16 @@ export class Enemy {
   private hpFillEl:  HTMLElement | null = null;
   private hpLabelEl: HTMLElement | null = null;
 
+  // Y offset tính từ bounding box thực — set sau khi load xong model
+  private hpBarYOffset = 2.4;
+
   private flashTimer = 0;
   private originalEmissives = new Map<THREE.Material, THREE.Color>();
 
   private _dir  = new THREE.Vector3();
   private _flat = new THREE.Vector3();
 
-  // LOD: chỉ update AI khi player đủ gần
-  private static readonly AI_RANGE_SQ = 120 * 120; // 120 units
+  private static readonly AI_RANGE_SQ = 120 * 120;
   private _skipAI = false;
 
   constructor(
@@ -114,8 +113,10 @@ export class Enemy {
     private scene: THREE.Scene,
     private hudContainer: HTMLElement,
   ) {
+    // BUG FIX: spread config trước, sau đó dùng ?? để fallback
+    // Tránh trường hợp scale=4.5 từ scene bị ghi đè bởi default 0.03
     this.cfg = {
-      scale:          config.scale          ?? 0.03,
+      scale:          config.scale          ?? 1.0,
       maxHp:          config.maxHp          ?? 100,
       moveSpeed:      config.moveSpeed      ?? 2.5,
       chaseRange:     config.chaseRange     ?? 12,
@@ -123,7 +124,7 @@ export class Enemy {
       attackDamage:   config.attackDamage   ?? 10,
       attackCooldown: config.attackCooldown ?? 1.5,
       patrolRadius:   config.patrolRadius   ?? 6,
-      ...config,
+      ...config,  // config.scale ghi đè default ở trên nếu được truyền vào
     };
 
     this.hp           = this.cfg.maxHp;
@@ -131,7 +132,7 @@ export class Enemy {
     this.patrolTarget = spawnPos.clone();
 
     this.root = new THREE.Group();
-    this.root.frustumCulled = true; // bật frustum cull để THREE tự cull khi ra ngoài camera
+    this.root.frustumCulled = false; // Group không culled — mesh bên trong tự cull
     this.root.position.copy(spawnPos);
     this.scene.add(this.root);
 
@@ -146,16 +147,14 @@ export class Enemy {
   private buildPlaceholder() {
     const mat  = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.7 });
     const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.0, 4, 8), mat);
-    body.position.y = 1.0; body.castShadow = true;
-    body.name = "__placeholder";
+    body.position.y = 1.0; body.castShadow = true; body.name = "__placeholder";
     this.root.add(body);
 
     const head = new THREE.Mesh(
       new THREE.SphereGeometry(0.28, 12, 12),
       new THREE.MeshStandardMaterial({ color: 0xdd4444 }),
     );
-    head.position.y = 1.9; head.castShadow = true;
-    head.name = "__placeholder";
+    head.position.y = 1.9; head.castShadow = true; head.name = "__placeholder";
     this.root.add(head);
 
     const eyeMat = new THREE.MeshStandardMaterial({
@@ -163,33 +162,52 @@ export class Enemy {
     });
     for (const sx of [-0.12, 0.12]) {
       const eye = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 6), eyeMat);
-      eye.position.set(sx, 1.92, 0.24);
-      eye.name = "__placeholder";
+      eye.position.set(sx, 1.92, 0.24); eye.name = "__placeholder";
       this.root.add(eye);
     }
   }
 
-  // ── Load assets — dùng cache, không load lại ───────────────────────────────
+  // ── Load assets ────────────────────────────────────────────────────────────
   private async loadAssets() {
     try {
-      // Clone từ cache thay vì load lại
-      const src = await loadModelCached(this.cfg.modelUrl);
+      const src   = await loadModelCached(this.cfg.modelUrl);
       const model = src.clone();
 
-      model.scale.setScalar(this.cfg.scale);
+      // ── BUG FIX: tách FBX unit scale ra khỏi game scale ──────────────────
+      // B1: đo bounding box ở scale gốc để biết model cao bao nhiêu
+      model.scale.setScalar(1);
+      model.updateMatrixWorld(true);
+      const rawBbox = new THREE.Box3().setFromObject(model);
+      const rawH    = rawBbox.max.y - rawBbox.min.y;
+
+      // B2: FBX thường dùng đơn vị cm → nhân 0.01 để ra mét
+      // Nếu rawH > 10 (cao hơn 10 đơn vị) thì gần chắc là cm
+      // Target height: goblin cao ~1.5m trong game
+      const TARGET_HEIGHT = 1.5; // mét
+      let unitScale = 1.0;
+      if (rawH > 10) {
+        // FBX cm: auto-normalize về target height, rồi nhân cfg.scale
+        unitScale = TARGET_HEIGHT / rawH;
+      }
+      // cfg.scale giờ là multiplier thực sự (1.0 = bình thường, 2.0 = to gấp đôi)
+      const finalScale = unitScale * this.cfg.scale;
+      model.scale.setScalar(finalScale);
       model.updateMatrixWorld(true);
 
+      // B3: căn chỉnh foot về y=0
       const bbox       = new THREE.Box3().setFromObject(model);
-      const h          = bbox.max.y - bbox.min.y;
-      const footOffset = isFinite(bbox.min.y) && h > 0.1 ? -bbox.min.y : 0;
+      const footOffset = isFinite(bbox.min.y) ? -bbox.min.y : 0;
       model.position.set(0, footOffset, 0);
+
+      // B4: tính HP bar offset từ bounding box thực (đỉnh đầu + 10% margin)
+      const modelH = bbox.max.y - bbox.min.y;
+      this.hpBarYOffset = modelH + modelH * 0.1; // ngay trên đầu
 
       model.traverse(n => {
         const mesh = n as THREE.Mesh;
         if (!mesh.isMesh) return;
         mesh.castShadow    = true;
         mesh.frustumCulled = true;
-
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         mats.forEach(mat => {
           const m = mat as THREE.MeshStandardMaterial;
@@ -199,6 +217,7 @@ export class Enemy {
         });
       });
 
+      // Xóa placeholder
       this.root.children
         .filter(c => c.name === "__placeholder")
         .forEach(c => this.root.remove(c));
@@ -213,7 +232,6 @@ export class Enemy {
         }
       });
 
-      // Tất cả goblin dùng chung 4 clip đã cache
       const [idle, walk, attack, death] = await Promise.all([
         loadClipCached(this.cfg.animIdle),
         loadClipCached(this.cfg.animWalk),
@@ -243,10 +261,8 @@ export class Enemy {
   private playAnim(key: EnemyAnimKey, crossfade = 0.2) {
     if (!this.mixer) return;
     if (this.currentAnimKey === key) return;
-
     const next = this.actions[key];
     if (!next) return;
-
     if (this.currentAction && this.currentAction !== next) {
       this.currentAction.fadeOut(crossfade);
     }
@@ -293,17 +309,20 @@ export class Enemy {
 
   private updateHpBarPosition(camera: THREE.Camera) {
     if (!this.hpBarEl || this.state === "dead") return;
-    // Ẩn HP bar khi bị cull (skip AI)
     if (this._skipAI) { this.hpBarEl.style.opacity = "0"; return; }
+
+    // BUG FIX: dùng hpBarYOffset tính từ bounding box thực thay vì hardcode 2.4
     const pos = this.root.position.clone();
-    pos.y += 2.4;
+    pos.y += this.hpBarYOffset;
     pos.project(camera);
+
     const hw = this.hudContainer.clientWidth  / 2;
     const hh = this.hudContainer.clientHeight / 2;
-    const visible = pos.z > -1 && pos.z < 1;
+    // Ẩn nếu ra sau camera hoặc ngoài frustum
+    const visible = pos.z > -1 && pos.z < 1 && Math.abs(pos.x) < 1.1 && Math.abs(pos.y) < 1.1;
     this.hpBarEl.style.opacity = visible ? "1" : "0";
-    this.hpBarEl.style.left   = `${pos.x *  hw + hw}px`;
-    this.hpBarEl.style.top    = `${pos.y * -hh + hh}px`;
+    this.hpBarEl.style.left    = `${pos.x *  hw + hw}px`;
+    this.hpBarEl.style.top     = `${pos.y * -hh + hh}px`;
   }
 
   private refreshHpBar() {
@@ -354,17 +373,15 @@ export class Enemy {
   update(dt: number, playerPos: THREE.Vector3, camera: THREE.Camera): number {
     if (this.state === "dead") return 0;
 
-    // LOD: cách xa hơn AI_RANGE → chỉ update mixer, bỏ qua AI + HP bar
     const distSq = this.root.position.distanceToSquared(playerPos);
     this._skipAI = distSq > Enemy.AI_RANGE_SQ;
 
     this.mixer?.update(dt);
-
     if (this._skipAI) return 0;
 
     this.updateHpBarPosition(camera);
 
-    // Flash emissive
+    // Flash emissive khi bị hit
     if (this.flashTimer > 0) {
       this.flashTimer -= dt;
       const on = this.flashTimer > 0;
@@ -379,8 +396,7 @@ export class Enemy {
             sm.emissive.setHex(0xff2200);
           } else {
             const orig = this.originalEmissives.get(sm);
-            if (orig) sm.emissive.copy(orig);
-            else sm.emissive.setHex(0x000000);
+            if (orig) sm.emissive.copy(orig); else sm.emissive.setHex(0x000000);
           }
         });
       });
@@ -391,11 +407,7 @@ export class Enemy {
 
     switch (this.state) {
       case "patrol": {
-        if (dist < this.cfg.chaseRange) {
-          this.state = "chase";
-          this.playAnim("walk");
-          break;
-        }
+        if (dist < this.cfg.chaseRange) { this.state = "chase"; this.playAnim("walk"); break; }
         const d2t = this.root.position.distanceTo(this.patrolTarget);
         if (d2t < 0.5) {
           this.patrolWaitTimer -= dt;
@@ -411,30 +423,20 @@ export class Enemy {
         }
         break;
       }
-
       case "chase": {
         if (dist > this.cfg.chaseRange * 1.3) {
-          this.state = "patrol";
-          this.pickPatrolTarget();
-          this.playAnim("walk");
-          break;
+          this.state = "patrol"; this.pickPatrolTarget(); this.playAnim("walk"); break;
         }
-        if (dist <= this.cfg.attackRange) {
-          this.state = "attack";
-          break;
-        }
+        if (dist <= this.cfg.attackRange) { this.state = "attack"; break; }
         this.playAnim("walk");
         this.moveToward(playerPos, dt, this.cfg.moveSpeed);
         break;
       }
-
       case "attack": {
         this.attackTimer -= dt;
         this.faceTarget(playerPos);
         if (dist > this.cfg.attackRange * 1.2) {
-          this.state = "chase";
-          this.playAnim("walk");
-          break;
+          this.state = "chase"; this.playAnim("walk"); break;
         }
         if (this.attackTimer <= 0 && !this.isAttacking) {
           this.attackTimer = this.cfg.attackCooldown;
@@ -505,12 +507,10 @@ export class EnemyManager {
       total += e.update(dt, playerPos, camera);
       if (e.isDead()) this.deadCount++;
     }
-
     if (this.deadCount > 0) {
       this.enemies = this.enemies.filter(e => e.root.parent !== null);
       this.deadCount = 0;
     }
-
     return total;
   }
 
@@ -530,4 +530,5 @@ export class EnemyManager {
     this.enemies.forEach(e => e.dispose());
     this.enemies = [];
   }
-}
+                        }
+              
