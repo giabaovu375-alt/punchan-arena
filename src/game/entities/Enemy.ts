@@ -42,11 +42,12 @@ function loadModelCached(url: string): Promise<CachedModel> {
       group.rotation.set(0, 0, 0);
       // ← KHÔNG gọi group.scale.set(1,1,1) ở đây nữa
       group.updateMatrixWorld(true);
-      const bbox      = new THREE.Box3().setFromObject(group);
-      const rawHeight = bbox.max.y - bbox.min.y;
-
-      // Debug: xóa sau khi confirm fix
-      console.log(`[ModelCache] ${url} | rawHeight=${rawHeight.toFixed(4)}m | rootScale=${group.scale.x.toFixed(4)}`);
+      const bbox  = new THREE.Box3().setFromObject(group);
+      const rawH  = bbox.max.y - bbox.min.y;
+      // FBX export đơn vị cm, rootScale=1 → rawH ~164, chia 100 về mét
+      const isCm      = rawH > 10;
+      const rawHeight = isCm ? rawH / 100 : rawH;
+      console.log(`[ModelCache] ${url} | rawH=${rawH.toFixed(2)} isCm=${isCm} → rawHeight=${rawHeight.toFixed(4)}m`);
 
       if (rawHeight < 0.01) {
         console.warn(`[ModelCache] rawHeight quá nhỏ (${rawHeight}) — FBX có thể bị export sai đơn vị`);
@@ -557,4 +558,4 @@ export class EnemyManager {
     this.enemies.forEach((e) => e.dispose());
     this.enemies = [];
   }
-}
+  }
