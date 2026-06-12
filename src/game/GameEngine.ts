@@ -1,370 +1,563 @@
 import * as THREE from "three";
-import { type CharacterDef } from "./characters";
-import { type AnimClipMap, type AnimKey, type InputState, ANIM_KEYS } from "./types";
-import { GameEvents } from "./types/events";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
+import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader";
 
-import {
-  AnimationController,
-  CombatController,
-  PlayerController,
-  CameraIntro,
-} from "./controllers";
+// ─────────────────────────────────────────────────────────────────────────────
+// ANIMATION CACHE — clip data only, không cache model/skeleton
+// ─────────────────────────────────────────────────────────────────────────────
+const _animCache = new Map<string, Promise<THREE.AnimationClip | null>>();
 
-import { eventBus, ScreenManager } from "./core";
-import { HUD, MobileUI, DialogueUI } from "./ui";
-import { WorldScene } from "./scenes/WorldScene";
-import { type IntroSceneHandles } from "./IntroScene";
+function loadClipCached(url: string): Promise<THREE.AnimationClip | null> {
+  if (_animCache.has(url)) return _animCache.get(url)!;
+  const p = new Promise<THREE.AnimationClip | null>((res) => {
+    new FBXLoader().load(
+      url,
+      (fbx) => res(fbx.animations[0] ?? null),
+      undefined,
+      () => { console.warn(`⚠️ Clip failed: ${url}`); res(null); }
+    );
+  });
+  _animCache.set(url, p);
+  return p;
+}
 
-import { CameraController } from "./controllers/CameraController";
-import { InputController }  from "./controllers/InputController";
-import { LoadingOverlay }   from "./controllers/LoadingOverlay";
-import { SceneController }  from "./controllers/SceneController";
+// ─────────────────────────────────────────────────────────────────────────────
+// Load model — MỖI ENEMY LOAD RIÊNG để tránh shared skeleton/bones
+// Chỉ cache rawHeight (số đo) để tính scale, không cache THREE.Group
+// ─────────────────────────────────────────────────────────────────────────────
+const _heightCache = new Map<string, Promise<number>>();
 
-export { ANIM_KEYS, type AnimKey, type AnimClipMap, type InputState } from "./types";
+function loadRawHeight(url: string): Promise<number> {
+  if (_heightCache.has(url)) return _heightCache.get(url)!;
+  const p = new Promise<number>((res) => {
+    const onLoaded = (group: THREE.Group) => {
+      group.position.set(0, 0, 0);
+      group.rotation.set(0, 0, 0);
+      group.updateMatrixWorld(true);
+      const bbox = new THREE.Box3().setFromObject(group);
+      const rawH = bbox.max.y - bbox.min.y;
+      const isCm = rawH > 10;
+      const height = isCm ? rawH / 100 : rawH;
+      console.log(`[HeightCache] ${url} rawH=${rawH.toFixed(2)} isCm=${isCm} → ${height.toFixed(4)}m`);
+      res(height);
+    };
+    if (url.endsWith(".glb") || url.endsWith(".gltf")) {
+      new GLTFLoader().load(url, (g) => onLoaded(g.scene as THREE.Group), undefined, () => res(1.8));
+    } else {
+      new FBXLoader().load(url, (fbx) => onLoaded(fbx as unknown as THREE.Group), undefined, () => res(1.8));
+    }
+  });
+  _heightCache.set(url, p);
+  return p;
+}
 
-// ─── GameEngine ───────────────────────────────────────────────────────────────
-export class GameEngine {
-  private scene:    THREE.Scene;
-  private camera:   THREE.PerspectiveCamera;
-  private renderer: THREE.WebGLRenderer;
-  private timer   = new THREE.Timer();
-  private rafId   = 0;
-  private disposed= false;
-  private elapsed = 0;
+function loadFreshModel(url: string): Promise<THREE.Group> {
+  return new Promise((res, rej) => {
+    if (url.endsWith(".glb") || url.endsWith(".gltf")) {
+      new GLTFLoader().load(url, (g) => res(g.scene as THREE.Group), undefined, rej);
+    } else {
+      new FBXLoader().load(url, (fbx) => res(fbx as unknown as THREE.Group), undefined, rej);
+    }
+  });
+}
 
-  private character:    CharacterDef;
-  private isMobile:     boolean;
-  private player!:      THREE.Object3D;
-  private modelRoot:    THREE.Object3D | null = null;
-  private bodyParts:    { body: THREE.Object3D; head: THREE.Object3D } | null = null;
-  private playerHeight= 1.6;
-  private animTime    = 0;
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIG
+// ─────────────────────────────────────────────────────────────────────────────
+export interface EnemyConfig {
+  modelUrl:        string;
+  animIdle:        string;
+  animWalk:        string;
+  animAttack:      string;
+  animDeath:       string;
+  targetHeight?:   number;
+  scale?:          number;
+  maxHp?:          number;
+  moveSpeed?:      number;
+  chaseRange?:     number;
+  attackRange?:    number;
+  attackDamage?:   number;
+  attackCooldown?: number;
+  patrolRadius?:   number;
+}
 
-  private camCtrl!:     CameraController;
-  private inputCtrl!:   InputController;
-  private overlay!:     LoadingOverlay;
-  private sceneCtrl!:   SceneController;
+export const GOBLIN_CONFIG: EnemyConfig = {
+  modelUrl:       "/model/goblin.fbx",
+  animIdle:       "/animation/animation-goblin/Rifle Kneel Hit To Back.fbx",
+  animWalk:       "/animation/animation-goblin/Walking.fbx",
+  animAttack:     "/animation/animation-goblin/Standing Melee Attack Backhand.fbx",
+  animDeath:      "/animation/animation-goblin/Zombie Reaction Hit.fbx",
+  targetHeight:   1.8,
+  scale:          1.0,
+  maxHp:          150,
+  moveSpeed:      2.2,
+  chaseRange:     15,
+  attackRange:    2.5,
+  attackDamage:   12,
+  attackCooldown: 1.2,
+  patrolRadius:   6,
+};
 
-  private animCtrl!:    AnimationController;
-  private playerCtrl!:  PlayerController;
-  private combatCtrl!:  CombatController;
-  private cameraIntro!: CameraIntro;
+// ─────────────────────────────────────────────────────────────────────────────
+type EnemyState   = "idle" | "patrol" | "chase" | "attack" | "dead";
+type EnemyAnimKey = "idle" | "walk" | "attack" | "death";
 
-  private hud!:         HUD;
-  private mobileUI:     MobileUI | null = null;
-  private dialogue!:    DialogueUI;
-  private screenManager!: ScreenManager;
+export class Enemy {
+  readonly root: THREE.Group;
+  private mixer: THREE.AnimationMixer | null = null;
+  private actions: Partial<Record<EnemyAnimKey, THREE.AnimationAction>> = {};
+  private currentAction:  THREE.AnimationAction | null = null;
+  private currentAnimKey: EnemyAnimKey | null = null;
 
-  private _worldScene:   WorldScene | null        = null;
-  private _introHandles: IntroSceneHandles | null = null;
+  private state: EnemyState = "patrol";
+  private hp: number;
+  private readonly cfg: Required<EnemyConfig>;
 
-  // ── Throttle: HUD + compass chỉ update 10fps thay vì 60fps ─────────────────
-  private _hudTimer   = 0;
-  private _frameCount = 0;
+  private spawnPos:        THREE.Vector3;
+  private patrolTarget:    THREE.Vector3;
+  private patrolWaitTimer = 0;
+  private attackTimer     = 0;
+  private isAttacking     = false;
 
-  private constructor(
-    private container: HTMLElement,
-    character:         CharacterDef,
-    model:             THREE.Group | null,
-    clips:             AnimClipMap,
+  private hpBarEl:   HTMLElement | null = null;
+  private hpFillEl:  HTMLElement | null = null;
+  private hpLabelEl: HTMLElement | null = null;
+  private hpBarYOffset = 2.4;
+
+  private flashTimer = 0;
+  private originalEmissives = new Map<THREE.Material, THREE.Color>();
+
+  private _dir  = new THREE.Vector3();
+  private _flat = new THREE.Vector3();
+
+  private static readonly AI_RANGE_SQ = 120 * 120;
+  private _skipAI = false;
+
+  private _disposed = false;
+  get disposed() { return this._disposed; }
+
+  constructor(
+    spawnPos: THREE.Vector3,
+    config: EnemyConfig,
+    private scene: THREE.Scene,
+    private hudContainer: HTMLElement,
   ) {
-    this.character = character;
-    this.isMobile  = ("ontouchstart" in window) || navigator.maxTouchPoints > 0;
+    this.cfg = {
+      modelUrl:       config.modelUrl,
+      animIdle:       config.animIdle,
+      animWalk:       config.animWalk,
+      animAttack:     config.animAttack,
+      animDeath:      config.animDeath,
+      targetHeight:   config.targetHeight   ?? 1.8,
+      scale:          config.scale          ?? 1.0,
+      maxHp:          config.maxHp          ?? 100,
+      moveSpeed:      config.moveSpeed      ?? 2.5,
+      chaseRange:     config.chaseRange     ?? 12,
+      attackRange:    config.attackRange    ?? 1.6,
+      attackDamage:   config.attackDamage   ?? 10,
+      attackCooldown: config.attackCooldown ?? 1.5,
+      patrolRadius:   config.patrolRadius   ?? 6,
+    };
 
-    // ── Scene ──────────────────────────────────────────────────────────────
-    this.scene            = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x9bc4e2);
-    this.scene.fog        = new THREE.Fog(0x9bc4e2, 40, 180);
+    this.hp           = this.cfg.maxHp;
+    this.spawnPos     = spawnPos.clone();
+    this.patrolTarget = spawnPos.clone();
 
-    // ── Camera ─────────────────────────────────────────────────────────────
-    this.camera = new THREE.PerspectiveCamera(
-      52,
-      container.clientWidth / container.clientHeight,
-      0.1,
-      // Mobile: far plane nhỏ hơn → ít fragment shader work hơn
-      this.isMobile ? 400 : 600,
-    );
+    this.root = new THREE.Group();
+    this.root.position.copy(spawnPos);
+    this.root.frustumCulled = false;
+    this.scene.add(this.root);
 
-    // ── Renderer ───────────────────────────────────────────────────────────
-    this.renderer = new THREE.WebGLRenderer({
-      antialias:       true,
-      powerPreference: "high-performance",
-      precision:       "highp",
-    });
-
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setSize(container.clientWidth, container.clientHeight);
-
-    // Mobile: tắt shadow hoàn toàn
-    this.renderer.shadowMap.enabled = !this.isMobile;
-    this.renderer.shadowMap.type    = THREE.PCFShadowMap;
-
-    this.renderer.toneMapping         = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
-    this.renderer.outputColorSpace    = THREE.SRGBColorSpace;
-
-    // Tắt sort objects — tiết kiệm CPU mỗi frame (bật lại nếu có transparent z-fight)
-    this.renderer.sortObjects = false;
-
-    container.style.position = "relative";
-    container.appendChild(this.renderer.domElement);
-
-    this.screenManager = new ScreenManager();
-
-    // ── Player ─────────────────────────────────────────────────────────────
-    this.player      = new THREE.Group();
-    this.player.name = "PlayerRig";
-
-    // ── Controllers ────────────────────────────────────────────────────────
-    this.animCtrl = new AnimationController({
-      isMoving:       () => this.playerCtrl.isMovingNow(),
-      onComboChanged: (n) => this.hud.flashCombo(n),
-    });
-
-    this.combatCtrl = new CombatController(
-      this.player, this.camera, this.container,
-      (key) => this.animCtrl.triggerAttack(key),
-      () => this._worldScene?.getEnemyRoots() ?? [],
-    );
-
-    this.playerCtrl = new PlayerController({
-      character,
-      worldRadius: 400, // FIX: từ 140 → 400, đủ bao toàn map
-      onAttack: (key) => this.combatCtrl.scheduleAttack(key as "punch" | "kick" | "mmaKick"),
-    });
-
-    if (model) {
-      const { modelRoot, playerHeight, footOffset } =
-        this.animCtrl.setupModel(this.player, model, clips);
-      this.modelRoot    = modelRoot;
-      this.playerHeight = playerHeight;
-      this.playerCtrl.setFloor(footOffset);
-    } else {
-      this.player.add(this._createPlaceholder());
-    }
-    this.scene.add(this.player);
-
-    // ── UI ─────────────────────────────────────────────────────────────────
-    this.dialogue = new DialogueUI(container);
-    this.hud      = new HUD(container, character, this.isMobile);
-    if (this.isMobile) {
-      this.mobileUI = new MobileUI(
-        container,
-        this.renderer.domElement,
-        this.playerCtrl.input,
-        {
-          jump:         () => this.playerCtrl.requestJump(),
-          attack:       (key) => this.combatCtrl.scheduleAttack(key as "punch" | "kick" | "mmaKick"),
-          rotateCamera: (dYaw, dPitch) => this.camCtrl.rotate(dYaw, dPitch),
-        }
-      );
-    }
-
-    this.camCtrl = new CameraController(this.camera, this.player, this.playerHeight);
-    this.overlay = new LoadingOverlay(container);
-
-    this.sceneCtrl = new SceneController(
-      {
-        scene:        this.scene,
-        player:       this.player,
-        camera:       this.camera,
-        overlay:      this.overlay,
-        onWorldReady: (ws) => { this._worldScene = ws; this.elapsed = 0; },
-        onIntroReady: (h)  => { this._introHandles = h; this.elapsed = 0; },
-        onWorldClear: ()   => { this._worldScene = null; },
-        setColliders: (c)  => this.playerCtrl.setColliders(c as any),
-        resetCombat:  ()   => this.combatCtrl.reset(),
-      },
-      this.isMobile
-    );
-
-    this.inputCtrl = new InputController(
-      this.renderer.domElement,
-      container,
-      {
-        onRotate:      (dY, dP) => this.camCtrl.rotate(dY, dP),
-        onZoom:        (d)      => this.camCtrl.zoom(d),
-        onAttack:      ()       => this.combatCtrl.scheduleAttack("punch"),
-        isIntroActive: ()       => this.cameraIntro?.isActive() ?? false,
-        onResize:      (w, h)   => {
-          this.camCtrl.onResize(w / h);
-          this.renderer.setSize(w, h);
-        },
-        onTouchStart:  (e) => this.camCtrl.onTouchStart(e),
-        onTouchMove:   (e) => this.camCtrl.onTouchMove(e),
-      },
-      this.isMobile
-    );
-
-    // ── Events ─────────────────────────────────────────────────────────────
-    eventBus.on(GameEvents.PLAYER_DAMAGE, (data: { amount: number }) => {
-      this.playerCtrl.hp = Math.max(0, this.playerCtrl.hp - data.amount / 100);
-      this.hud.setHP(this.playerCtrl.hp);
-      this.combatCtrl.camShake.addTrauma(0.3);
-    });
-
-    this.playerCtrl.bindKeyboard();
-
-    this.sceneCtrl.loadIntro(this.isMobile);
-    this._start();
-
-    this.cameraIntro = new CameraIntro(this.camera, () => {
-      this.sceneCtrl.switchToWorld().catch(console.error);
-    });
-  }
-
-  // ── Factory ────────────────────────────────────────────────────────────────
-  static async create(
-    container: HTMLElement,
-    character: CharacterDef,
-    model:     THREE.Group | null,
-    clips:     AnimClipMap,
-  ): Promise<GameEngine> {
-    return new GameEngine(container, character, model, clips);
-  }
-
-  // ── Game Loop ──────────────────────────────────────────────────────────────
-  private _start() {
-    this.timer.update();
-
-    // Mobile: target 30fps thay vì 60fps → CPU/GPU giảm tải 50%
-    if (this.isMobile) {
-      let lastTime = 0;
-      const FRAME_MS = 1000 / 30;
-      const tick = (now: number) => {
-        if (this.disposed) return;
-        this.rafId = requestAnimationFrame(tick);
-        const delta = now - lastTime;
-        if (delta < FRAME_MS) return; // skip frame nếu chưa đủ ~33ms
-        lastTime = now - (delta % FRAME_MS);
-        this.timer.update();
-        const dt = Math.min(this.timer.getDelta(), 0.05);
-        this._update(dt);
-        const renderScene = this._worldScene ? this._worldScene.scene : this.scene;
-        this.renderer.render(renderScene, this.camera);
-      };
-      this.rafId = requestAnimationFrame(tick);
-    } else {
-      const tick = () => {
-        if (this.disposed) return;
-        this.timer.update();
-        const dt = Math.min(this.timer.getDelta(), 0.05);
-        this._update(dt);
-        const renderScene = this._worldScene ? this._worldScene.scene : this.scene;
-        this.renderer.render(renderScene, this.camera);
-        this.rafId = requestAnimationFrame(tick);
-      };
-      this.rafId = requestAnimationFrame(tick);
-    }
-  }
-
-  private _update(dt: number): void {
-    this._frameCount++;
-
-    // ── Intro cutscene ──────────────────────────────────────────────────────
-    if (this.cameraIntro?.isActive()) {
-      this.cameraIntro.tick(dt);
-      this.animCtrl.update(dt);
-      this.dialogue.update(dt);
-      return;
-    }
-
-    this.elapsed += dt;
-
-    // ── Camera ──────────────────────────────────────────────────────────────
-    this.camCtrl.update(dt);
-
-    // ── Player ──────────────────────────────────────────────────────────────
-    const locked = this.dialogue.isVisible();
-    let moving = false, sprinting = false, onGround = true;
-
-    if (!locked) {
-      const r = this.playerCtrl.update(dt, this.camCtrl.getYaw(), this.player);
-      moving    = r.moving;
-      sprinting = r.sprinting;
-      onGround  = r.onGround;
-    }
-
-    // ── Combat + Animation ──────────────────────────────────────────────────
-    this.combatCtrl.update(dt);
-    this.combatCtrl.camShake.apply(this.camera, dt);
-
-    const { isAttacking } = this.animCtrl.update(dt);
-    if (!isAttacking) this.animCtrl.drive(moving, sprinting, onGround);
-
-    // ── Placeholder body bob ────────────────────────────────────────────────
-    this.animTime += dt;
-    if (this.bodyParts) {
-      const bob = moving && onGround
-        ? Math.sin(this.animTime * 14) * 0.06
-        : Math.sin(this.animTime *  2) * 0.03;
-      this.bodyParts.body.position.y = 0.9  + bob;
-      this.bodyParts.head.position.y = 1.75 + bob;
-    }
-
-    // ── Scene tick ──────────────────────────────────────────────────────────
-    this.sceneCtrl.tick(dt, this.elapsed);
-    this.dialogue.update(dt);
-
-    // ── HUD: chỉ update 10fps — DOM operation tốn kém trên mobile ───────────
-    this._hudTimer += dt;
-    if (this._hudTimer >= 0.1) {
-      this._hudTimer = 0;
-      this.hud.setStamina(this.playerCtrl.stamina);
-      this.hud.setHP(this.playerCtrl.hp);
-      this.hud.setCompassYaw(this.camCtrl.getYaw());
-    }
-  }
-
-  // ── Public API ─────────────────────────────────────────────────────────────
-  getScene()  { return this.scene; }
-  getPlayer() { return this.player; }
-  getMixer()  { return this.animCtrl.getMixer(); }
-
-  dispose() {
-    this.disposed = true;
-    cancelAnimationFrame(this.rafId);
-    this.playerCtrl.unbindKeyboard();
-    this.inputCtrl.dispose();
-    this.overlay.hide();
-    this.combatCtrl.dispose();
-    this.mobileUI?.dispose();
-    this.hud.dispose();
-    this.dialogue.dispose();
-    this.screenManager.dispose();
-    this.renderer.dispose();
-    if (this.renderer.domElement.parentElement === this.container)
-      this.container.removeChild(this.renderer.domElement);
+    this.buildPlaceholder();
+    this.buildHpBar();
+    this.loadAssets();
+    this.pickPatrolTarget();
+    this.patrolWaitTimer = 1 + Math.random() * 1.5;
   }
 
   // ── Placeholder ────────────────────────────────────────────────────────────
-  private _createPlaceholder(): THREE.Object3D {
-    const group   = new THREE.Group();
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: this.character.color, roughness: 0.6, metalness: 0.15,
-    });
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 0.8, 4, 12), bodyMat);
-    body.position.y = 0.9;
-    body.castShadow = true;
-    group.add(body);
+  private buildPlaceholder() {
+    const mat  = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.7 });
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.0, 4, 8), mat);
+    body.position.y = 1.0; body.castShadow = true; body.name = "__placeholder";
+    this.root.add(body);
 
     const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.32, 16, 16),
-      new THREE.MeshStandardMaterial({ color: 0xe6c7a8, roughness: 0.8 })
+      new THREE.SphereGeometry(0.28, 12, 12),
+      new THREE.MeshStandardMaterial({ color: 0xdd4444 }),
     );
-    head.position.y = 1.75;
-    head.castShadow = true;
-    group.add(head);
+    head.position.y = 1.9; head.castShadow = true; head.name = "__placeholder";
+    this.root.add(head);
 
-    const nose = new THREE.Mesh(
-      new THREE.ConeGeometry(0.08, 0.2, 6),
-      new THREE.MeshStandardMaterial({ color: 0xffffff })
+    const eyeMat = new THREE.MeshStandardMaterial({
+      color: 0xff0000,
+      emissive: new THREE.Color(0xff2200),
+      emissiveIntensity: 2,
+    });
+    for (const sx of [-0.12, 0.12]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 6), eyeMat);
+      eye.position.set(sx, 1.92, 0.24); eye.name = "__placeholder";
+      this.root.add(eye);
+    }
+  }
+
+  // ── Load assets — model load fresh, không clone từ cache ──────────────────
+  private async loadAssets() {
+    try {
+      // Load rawHeight từ cache (chỉ số đo, không giữ Group)
+      // Đồng thời load fresh model riêng cho enemy này
+      const [rawHeight, model] = await Promise.all([
+        loadRawHeight(this.cfg.modelUrl),
+        loadFreshModel(this.cfg.modelUrl),
+      ]);
+
+      if (this._disposed) return; // enemy bị dispose trong lúc load
+
+      // Reset transform
+      model.position.set(0, 0, 0);
+      model.rotation.set(0, 0, 0);
+      model.updateMatrixWorld(true);
+
+      // Tính scale
+      let finalScale = 1.0;
+      if (rawHeight > 0.001) {
+        finalScale = (this.cfg.targetHeight / rawHeight) * this.cfg.scale;
+      }
+      console.log(`[Enemy] finalScale=${finalScale.toFixed(4)} targetH=${this.cfg.targetHeight} rawH=${rawHeight.toFixed(4)}`);
+
+      model.scale.setScalar(finalScale);
+      model.updateMatrixWorld(true);
+
+      // Căn chân về y=0
+      const bbox       = new THREE.Box3().setFromObject(model);
+      const modelH     = bbox.max.y - bbox.min.y;
+      const footOffset = isFinite(bbox.min.y) ? -bbox.min.y : 0;
+      model.position.set(0, footOffset, 0);
+
+      this.hpBarYOffset = modelH + modelH * 0.12;
+
+      model.traverse((n) => {
+        const mesh = n as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        mesh.castShadow    = true;
+        mesh.frustumCulled = false; // tắt frustum culling để tránh pop-in
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        mats.forEach((mat) => {
+          const m = mat as THREE.MeshStandardMaterial;
+          if (m.emissive && !this.originalEmissives.has(m)) {
+            this.originalEmissives.set(m, m.emissive.clone());
+          }
+        });
+      });
+
+      // Xóa placeholder, thêm model thật
+      [...this.root.children]
+        .filter((c) => c.name === "__placeholder")
+        .forEach((c) => this.root.remove(c));
+      this.root.add(model);
+      this.root.updateMatrixWorld(true);
+
+      // Mixer gắn vào model (không phải root)
+      this.mixer = new THREE.AnimationMixer(model);
+      this.mixer.addEventListener("finished", (e: any) => {
+        if (e.action === this.actions.attack) {
+          this.isAttacking = false;
+          if (this.state !== "dead") this.playAnim("idle");
+        }
+      });
+
+      const [idle, walk, attack, death] = await Promise.all([
+        loadClipCached(this.cfg.animIdle),
+        loadClipCached(this.cfg.animWalk),
+        loadClipCached(this.cfg.animAttack),
+        loadClipCached(this.cfg.animDeath),
+      ]);
+
+      if (this._disposed) return;
+
+      if (idle)   this.actions.idle   = this.mixer.clipAction(idle);
+      if (walk)   this.actions.walk   = this.mixer.clipAction(walk);
+      if (attack) {
+        const a = this.mixer.clipAction(attack);
+        a.loop = THREE.LoopOnce; a.clampWhenFinished = true;
+        this.actions.attack = a;
+      }
+      if (death) {
+        const a = this.mixer.clipAction(death);
+        a.loop = THREE.LoopOnce; a.clampWhenFinished = true;
+        this.actions.death = a;
+      }
+
+      this.playAnim("idle");
+    } catch (err) {
+      console.error("❌ Enemy asset load error:", err);
+    }
+  }
+
+  private playAnim(key: EnemyAnimKey, crossfade = 0.2) {
+    if (!this.mixer) return;
+    if (this.currentAnimKey === key) return;
+    const next = this.actions[key];
+    if (!next) return;
+    if (this.currentAction && this.currentAction !== next) {
+      this.currentAction.fadeOut(crossfade);
+    }
+    next.reset().fadeIn(crossfade).play();
+    this.currentAction  = next;
+    this.currentAnimKey = key;
+  }
+
+  // ── HP bar ─────────────────────────────────────────────────────────────────
+  private buildHpBar() {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = `
+      position:absolute; pointer-events:none; z-index:20;
+      display:flex; flex-direction:column; align-items:center; gap:2px;
+      transform:translateX(-50%); opacity:0; transition:opacity 0.2s;
+    `;
+    const track = document.createElement("div");
+    track.style.cssText = `
+      width:56px; height:5px; border-radius:99px;
+      background:rgba(0,0,0,0.5);
+      border:1px solid rgba(255,255,255,0.15); overflow:hidden;
+    `;
+    const fill = document.createElement("div");
+    fill.style.cssText = `
+      height:100%; width:100%; border-radius:99px;
+      background:linear-gradient(90deg,#22c55e,#86efac);
+      transition:width 0.15s ease;
+    `;
+    track.appendChild(fill);
+    const lbl = document.createElement("div");
+    lbl.style.cssText = `
+      font-size:9px; font-family:'SF Pro Display',sans-serif;
+      color:rgba(255,255,255,0.6); letter-spacing:0.05em;
+      text-shadow:0 1px 3px #000;
+    `;
+    lbl.textContent = String(this.cfg.maxHp);
+    wrap.appendChild(track);
+    wrap.appendChild(lbl);
+    this.hudContainer.appendChild(wrap);
+    this.hpBarEl   = wrap;
+    this.hpFillEl  = fill;
+    this.hpLabelEl = lbl;
+  }
+
+  private updateHpBarPosition(camera: THREE.Camera) {
+    if (!this.hpBarEl || this.state === "dead") return;
+    if (this._skipAI) { this.hpBarEl.style.opacity = "0"; return; }
+
+    const pos = this.root.position.clone();
+    pos.y += this.hpBarYOffset;
+    pos.project(camera);
+
+    const hw = this.hudContainer.clientWidth  / 2;
+    const hh = this.hudContainer.clientHeight / 2;
+    const visible = pos.z > -1 && pos.z < 1 && Math.abs(pos.x) < 1.1 && Math.abs(pos.y) < 1.1;
+    this.hpBarEl.style.opacity = visible ? "1" : "0";
+    this.hpBarEl.style.left    = `${pos.x *  hw + hw}px`;
+    this.hpBarEl.style.top     = `${pos.y * -hh + hh}px`;
+  }
+
+  private refreshHpBar() {
+    if (!this.hpFillEl || !this.hpLabelEl) return;
+    const pct = Math.max(0, this.hp / this.cfg.maxHp * 100);
+    this.hpFillEl.style.width = `${pct}%`;
+    this.hpFillEl.style.background = pct > 50
+      ? "linear-gradient(90deg,#22c55e,#86efac)"
+      : pct > 25
+        ? "linear-gradient(90deg,#f59e0b,#fcd34d)"
+        : "linear-gradient(90deg,#ef4444,#f97316)";
+    this.hpLabelEl.textContent = `${Math.ceil(this.hp)}`;
+  }
+
+  // ── Patrol ─────────────────────────────────────────────────────────────────
+  private pickPatrolTarget() {
+    const angle = Math.random() * Math.PI * 2;
+    const r     = (0.4 + Math.random() * 0.6) * this.cfg.patrolRadius;
+    this.patrolTarget.set(
+      this.spawnPos.x + Math.cos(angle) * r,
+      this.spawnPos.y,
+      this.spawnPos.z + Math.sin(angle) * r,
     );
-    nose.rotation.x = Math.PI / 2;
-    nose.position.set(0, 1.75, 0.32);
-    group.add(nose);
+  }
 
-    this.bodyParts = { body, head };
-    return group;
+  // ── Damage ─────────────────────────────────────────────────────────────────
+  takeDamage(dmg: number) {
+    if (this.state === "dead") return;
+    this.hp = Math.max(0, this.hp - dmg);
+    this.refreshHpBar();
+    this.flashTimer = 0.12;
+    if (this.hp <= 0) this.die();
+  }
+
+  isDead() { return this.state === "dead"; }
+
+  private die() {
+    this.state = "dead";
+    this.playAnim("death", 0.1);
+    if (this.hpBarEl) this.hpBarEl.style.opacity = "0";
+    setTimeout(() => { this.dispose(); }, 2500);
+  }
+
+  // ── Update ─────────────────────────────────────────────────────────────────
+  update(dt: number, playerPos: THREE.Vector3, camera: THREE.Camera): number {
+    if (this.state === "dead" || this._disposed) return 0;
+
+    const distSq = this.root.position.distanceToSquared(playerPos);
+    this._skipAI = distSq > Enemy.AI_RANGE_SQ;
+
+    if (!this._skipAI) {
+      this.mixer?.update(dt);
+      this.updateHpBarPosition(camera);
+    }
+
+    if (this._skipAI) return 0;
+
+    if (this.flashTimer > 0) {
+      this.flashTimer -= dt;
+      const on = this.flashTimer > 0;
+      this.root.traverse((n) => {
+        const m = n as THREE.Mesh;
+        if (!m.isMesh) return;
+        const mats = Array.isArray(m.material) ? m.material : [m.material];
+        mats.forEach((mat) => {
+          const sm = mat as THREE.MeshStandardMaterial;
+          if (!sm.emissive) return;
+          if (on) {
+            sm.emissive.setHex(0xff2200);
+          } else {
+            const orig = this.originalEmissives.get(sm);
+            if (orig) sm.emissive.copy(orig); else sm.emissive.setHex(0x000000);
+          }
+        });
+      });
+    }
+
+    const dist = Math.sqrt(distSq);
+    let dmg = 0;
+
+    switch (this.state) {
+      case "patrol": {
+        if (dist < this.cfg.chaseRange) { this.state = "chase"; this.playAnim("walk"); break; }
+        const d2t = this.root.position.distanceTo(this.patrolTarget);
+        if (d2t < 0.5) {
+          this.patrolWaitTimer -= dt;
+          this.playAnim("idle");
+          if (this.patrolWaitTimer <= 0) {
+            this.pickPatrolTarget();
+            this.patrolWaitTimer = 1 + Math.random() * 1.5;
+            this.playAnim("walk");
+          }
+        } else {
+          this.playAnim("walk");
+          this.moveToward(this.patrolTarget, dt, this.cfg.moveSpeed * 0.6);
+        }
+        break;
+      }
+      case "chase": {
+        if (dist > this.cfg.chaseRange * 1.3) {
+          this.state = "patrol"; this.pickPatrolTarget(); this.playAnim("walk"); break;
+        }
+        if (dist <= this.cfg.attackRange) { this.state = "attack"; break; }
+        this.playAnim("walk");
+        this.moveToward(playerPos, dt, this.cfg.moveSpeed);
+        break;
+      }
+      case "attack": {
+        this.attackTimer -= dt;
+        this.faceTarget(playerPos);
+        if (dist > this.cfg.attackRange * 1.2) {
+          this.state = "chase"; this.playAnim("walk"); break;
+        }
+        if (this.attackTimer <= 0 && !this.isAttacking) {
+          this.attackTimer = this.cfg.attackCooldown;
+          this.isAttacking = true;
+          this.currentAnimKey = null;
+          this.playAnim("attack", 0.1);
+          dmg = this.cfg.attackDamage;
+        }
+        break;
+      }
+    }
+
+    return dmg;
+  }
+
+  private moveToward(target: THREE.Vector3, dt: number, speed: number) {
+    this._dir.subVectors(target, this.root.position).setY(0);
+    const len = this._dir.length();
+    if (len < 0.01) return;
+    this._dir.normalize();
+    this.root.position.addScaledVector(this._dir, Math.min(speed * dt, len));
+    this.faceTarget(target);
+  }
+
+  private faceTarget(target: THREE.Vector3) {
+    this._flat.subVectors(target, this.root.position).setY(0);
+    if (this._flat.lengthSq() < 0.001) return;
+    this.root.rotation.y = Math.atan2(this._flat.x, this._flat.z);
+  }
+
+  dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+    this.scene.remove(this.root);
+    this.mixer?.stopAllAction();
+    this.hpBarEl?.parentElement?.removeChild(this.hpBarEl);
+    this.originalEmissives.clear();
+    this.root.traverse((n) => {
+      const m = n as THREE.Mesh;
+      if (m.isMesh) {
+        m.geometry?.dispose();
+        (Array.isArray(m.material) ? m.material : [m.material])
+          .forEach((mat: THREE.Material) => mat.dispose());
+      }
+    });
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EnemyManager
+// ─────────────────────────────────────────────────────────────────────────────
+export class EnemyManager {
+  private enemies: Enemy[] = [];
+
+  constructor(
+    private scene: THREE.Scene,
+    private hudContainer: HTMLElement,
+  ) {}
+
+  spawn(positions: THREE.Vector3[], config: EnemyConfig) {
+    for (const pos of positions) {
+      this.enemies.push(new Enemy(pos, config, this.scene, this.hudContainer));
+    }
+  }
+
+  update(dt: number, playerPos: THREE.Vector3, camera: THREE.Camera): number {
+    let total = 0;
+    for (const e of this.enemies) {
+      total += e.update(dt, playerPos, camera);
+    }
+    this.enemies = this.enemies.filter((e) => !e.disposed);
+    return total;
+  }
+
+  hitInRange(origin: THREE.Vector3, range: number, damage: number) {
+    for (const e of this.enemies) {
+      if (!e.isDead() && e.root.position.distanceTo(origin) <= range) {
+        e.takeDamage(damage);
+      }
+    }
+  }
+
+  getEnemyRoots(): THREE.Object3D[] {
+    return this.enemies.filter((e) => !e.isDead()).map((e) => e.root);
+  }
+
+  dispose() {
+    this.enemies.forEach((e) => e.dispose());
+    this.enemies = [];
+  }
+      }
+    
