@@ -3,9 +3,10 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ANIMATION CACHE
+// ANIMATION CACHE — clip data only, không cache model/skeleton
 // ─────────────────────────────────────────────────────────────────────────────
 const _animCache = new Map<string, Promise<THREE.AnimationClip | null>>();
+
 function loadClipCached(url: string): Promise<THREE.AnimationClip | null> {
   if (_animCache.has(url)) return _animCache.get(url)!;
   const p = new Promise<THREE.AnimationClip | null>((res) => {
@@ -21,51 +22,43 @@ function loadClipCached(url: string): Promise<THREE.AnimationClip | null> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MODEL CACHE
+// Load model — MỖI ENEMY LOAD RIÊNG để tránh shared skeleton/bones
+// Chỉ cache rawHeight (số đo) để tính scale, không cache THREE.Group
 // ─────────────────────────────────────────────────────────────────────────────
-interface CachedModel {
-  src:       THREE.Group;
-  rawHeight: number;
-}
-const _modelCache = new Map<string, Promise<CachedModel>>();
+const _heightCache = new Map<string, Promise<number>>();
 
-function loadModelCached(url: string): Promise<CachedModel> {
-  if (_modelCache.has(url)) return _modelCache.get(url)!;
-  const p = new Promise<CachedModel>((res, rej) => {
-
-    // FIX: KHÔNG reset scale — FBXLoader áp scale 0.01 lên root (cm→m),
-    // nếu reset scale=1 thì bbox đo ra ~180 (cm) thay vì ~1.8 (m)
-    // → finalScale = 1.8/180 = 0.01 → goblin bé tí, chỉ thấy thanh máu
-    // → con đầu tiên load sai scale = khổng lồ hoặc tí hon tùy lúc
+function loadRawHeight(url: string): Promise<number> {
+  if (_heightCache.has(url)) return _heightCache.get(url)!;
+  const p = new Promise<number>((res) => {
     const onLoaded = (group: THREE.Group) => {
       group.position.set(0, 0, 0);
       group.rotation.set(0, 0, 0);
-      // ← KHÔNG gọi group.scale.set(1,1,1) ở đây nữa
       group.updateMatrixWorld(true);
-      const bbox  = new THREE.Box3().setFromObject(group);
-      const rawH  = bbox.max.y - bbox.min.y;
-      // FBX export đơn vị cm, rootScale=1 → rawH ~164, chia 100 về mét
-      const isCm      = rawH > 10;
-      const rawHeight = isCm ? rawH / 100 : rawH;
-      console.log(`[ModelCache] ${url} | rawH=${rawH.toFixed(2)} isCm=${isCm} → rawHeight=${rawHeight.toFixed(4)}m`);
-
-      if (rawHeight < 0.01) {
-        console.warn(`[ModelCache] rawHeight quá nhỏ (${rawHeight}) — FBX có thể bị export sai đơn vị`);
-      }
-
-      res({ src: group, rawHeight });
+      const bbox = new THREE.Box3().setFromObject(group);
+      const rawH = bbox.max.y - bbox.min.y;
+      const isCm = rawH > 10;
+      const height = isCm ? rawH / 100 : rawH;
+      console.log(`[HeightCache] ${url} rawH=${rawH.toFixed(2)} isCm=${isCm} → ${height.toFixed(4)}m`);
+      res(height);
     };
-
     if (url.endsWith(".glb") || url.endsWith(".gltf")) {
-      new GLTFLoader().load(url, (g) => onLoaded(g.scene as THREE.Group), undefined, rej);
+      new GLTFLoader().load(url, (g) => onLoaded(g.scene as THREE.Group), undefined, () => res(1.8));
     } else {
-      new FBXLoader().load(url, (fbx) => {
-        onLoaded(fbx as unknown as THREE.Group);
-      }, undefined, rej);
+      new FBXLoader().load(url, (fbx) => onLoaded(fbx as unknown as THREE.Group), undefined, () => res(1.8));
     }
   });
-  _modelCache.set(url, p);
+  _heightCache.set(url, p);
   return p;
+}
+
+function loadFreshModel(url: string): Promise<THREE.Group> {
+  return new Promise((res, rej) => {
+    if (url.endsWith(".glb") || url.endsWith(".gltf")) {
+      new GLTFLoader().load(url, (g) => res(g.scene as THREE.Group), undefined, rej);
+    } else {
+      new FBXLoader().load(url, (fbx) => res(fbx as unknown as THREE.Group), undefined, rej);
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,28 +201,34 @@ export class Enemy {
     }
   }
 
-  // ── Load assets ────────────────────────────────────────────────────────────
+  // ── Load assets — model load fresh, không clone từ cache ──────────────────
   private async loadAssets() {
     try {
-      const { src, rawHeight } = await loadModelCached(this.cfg.modelUrl);
+      // Load rawHeight từ cache (chỉ số đo, không giữ Group)
+      // Đồng thời load fresh model riêng cho enemy này
+      const [rawHeight, model] = await Promise.all([
+        loadRawHeight(this.cfg.modelUrl),
+        loadFreshModel(this.cfg.modelUrl),
+      ]);
 
-      const model = src.clone(true);
+      if (this._disposed) return; // enemy bị dispose trong lúc load
+
+      // Reset transform
       model.position.set(0, 0, 0);
       model.rotation.set(0, 0, 0);
-      model.scale.set(1, 1, 1);
+      model.updateMatrixWorld(true);
 
-      // FIX: rawHeight giờ đã đúng (đơn vị m, ~1.8) nên finalScale tính ra đúng
+      // Tính scale
       let finalScale = 1.0;
       if (rawHeight > 0.001) {
         finalScale = (this.cfg.targetHeight / rawHeight) * this.cfg.scale;
       }
-
-      // Debug: xóa sau khi confirm fix
-      console.log(`[Enemy] finalScale=${finalScale.toFixed(4)} | targetHeight=${this.cfg.targetHeight} | rawHeight=${rawHeight.toFixed(4)}`);
+      console.log(`[Enemy] finalScale=${finalScale.toFixed(4)} targetH=${this.cfg.targetHeight} rawH=${rawHeight.toFixed(4)}`);
 
       model.scale.setScalar(finalScale);
       model.updateMatrixWorld(true);
 
+      // Căn chân về y=0
       const bbox       = new THREE.Box3().setFromObject(model);
       const modelH     = bbox.max.y - bbox.min.y;
       const footOffset = isFinite(bbox.min.y) ? -bbox.min.y : 0;
@@ -241,7 +240,7 @@ export class Enemy {
         const mesh = n as THREE.Mesh;
         if (!mesh.isMesh) return;
         mesh.castShadow    = true;
-        mesh.frustumCulled = true;
+        mesh.frustumCulled = false; // tắt frustum culling để tránh pop-in
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         mats.forEach((mat) => {
           const m = mat as THREE.MeshStandardMaterial;
@@ -251,12 +250,14 @@ export class Enemy {
         });
       });
 
-      this.root.children
+      // Xóa placeholder, thêm model thật
+      [...this.root.children]
         .filter((c) => c.name === "__placeholder")
         .forEach((c) => this.root.remove(c));
       this.root.add(model);
       this.root.updateMatrixWorld(true);
 
+      // Mixer gắn vào model (không phải root)
       this.mixer = new THREE.AnimationMixer(model);
       this.mixer.addEventListener("finished", (e: any) => {
         if (e.action === this.actions.attack) {
@@ -271,6 +272,8 @@ export class Enemy {
         loadClipCached(this.cfg.animAttack),
         loadClipCached(this.cfg.animDeath),
       ]);
+
+      if (this._disposed) return;
 
       if (idle)   this.actions.idle   = this.mixer.clipAction(idle);
       if (walk)   this.actions.walk   = this.mixer.clipAction(walk);
@@ -394,9 +397,7 @@ export class Enemy {
     this.state = "dead";
     this.playAnim("death", 0.1);
     if (this.hpBarEl) this.hpBarEl.style.opacity = "0";
-    setTimeout(() => {
-      this.dispose();
-    }, 2500);
+    setTimeout(() => { this.dispose(); }, 2500);
   }
 
   // ── Update ─────────────────────────────────────────────────────────────────
@@ -558,4 +559,4 @@ export class EnemyManager {
     this.enemies.forEach((e) => e.dispose());
     this.enemies = [];
   }
-  }
+        }
