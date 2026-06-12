@@ -51,12 +51,35 @@ function loadRawHeight(url: string): Promise<number> {
   return p;
 }
 
+// Giới hạn số model load song song để tránh lag trên mobile
+let _loadingCount = 0;
+const _loadQueue: Array<() => void> = [];
+const MAX_CONCURRENT = 2;
+
 function loadFreshModel(url: string): Promise<THREE.Group> {
   return new Promise((res, rej) => {
-    if (url.endsWith(".glb") || url.endsWith(".gltf")) {
-      new GLTFLoader().load(url, (g) => res(g.scene as THREE.Group), undefined, rej);
+    const doLoad = () => {
+      _loadingCount++;
+      const onDone = (group: THREE.Group) => {
+        _loadingCount--;
+        if (_loadQueue.length > 0) _loadQueue.shift()!();
+        res(group);
+      };
+      const onErr = (err: any) => {
+        _loadingCount--;
+        if (_loadQueue.length > 0) _loadQueue.shift()!();
+        rej(err);
+      };
+      if (url.endsWith(".glb") || url.endsWith(".gltf")) {
+        new GLTFLoader().load(url, (g) => onDone(g.scene as THREE.Group), undefined, onErr);
+      } else {
+        new FBXLoader().load(url, (fbx) => onDone(fbx as unknown as THREE.Group), undefined, onErr);
+      }
+    };
+    if (_loadingCount < MAX_CONCURRENT) {
+      doLoad();
     } else {
-      new FBXLoader().load(url, (fbx) => res(fbx as unknown as THREE.Group), undefined, rej);
+      _loadQueue.push(doLoad);
     }
   });
 }
@@ -479,7 +502,12 @@ export class Enemy {
         if (this.attackTimer <= 0 && !this.isAttacking) {
           this.attackTimer = this.cfg.attackCooldown;
           this.isAttacking = true;
-          this.currentAnimKey = null;
+          this.currentAnimKey = null; // force replay
+          // Stop current anim trước
+          if (this.currentAction) {
+            this.currentAction.fadeOut(0.1);
+            this.currentAction = null;
+          }
           this.playAnim("attack", 0.1);
           dmg = this.cfg.attackDamage;
         }
@@ -543,27 +571,4 @@ export class EnemyManager {
   update(dt: number, playerPos: THREE.Vector3, camera: THREE.Camera): number {
     let total = 0;
     for (const e of this.enemies) {
-      total += e.update(dt, playerPos, camera);
-    }
-    this.enemies = this.enemies.filter((e) => !e.disposed);
-    return total;
-  }
-
-  hitInRange(origin: THREE.Vector3, range: number, damage: number) {
-    for (const e of this.enemies) {
-      if (!e.isDead() && e.root.position.distanceTo(origin) <= range) {
-        e.takeDamage(damage);
-      }
-    }
-  }
-
-  getEnemyRoots(): THREE.Object3D[] {
-    return this.enemies.filter((e) => !e.isDead()).map((e) => e.root);
-  }
-
-  dispose() {
-    this.enemies.forEach((e) => e.dispose());
-    this.enemies = [];
-  }
-      }
-    
+      total += e.update(dt, pla
