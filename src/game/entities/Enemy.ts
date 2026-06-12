@@ -213,17 +213,22 @@ export class Enemy {
 
       if (this._disposed) return; // enemy bị dispose trong lúc load
 
-      // Reset transform
+      // Reset transform — KHÔNG reset scale vì FBX có thể có internal scale
       model.position.set(0, 0, 0);
       model.rotation.set(0, 0, 0);
+      model.scale.set(1, 1, 1);
       model.updateMatrixWorld(true);
 
-      // Tính scale
+      // Đo bbox THỰC TẾ của model (đúng đơn vị, kể cả cm)
+      const bboxRaw    = new THREE.Box3().setFromObject(model);
+      const realHeight = bboxRaw.max.y - bboxRaw.min.y;
+
+      // Scale về targetHeight dựa trên kích thước thực
       let finalScale = 1.0;
-      if (rawHeight > 0.001) {
-        finalScale = (this.cfg.targetHeight / rawHeight) * this.cfg.scale;
+      if (realHeight > 0.001) {
+        finalScale = (this.cfg.targetHeight / realHeight) * this.cfg.scale;
       }
-      console.log(`[Enemy] finalScale=${finalScale.toFixed(4)} targetH=${this.cfg.targetHeight} rawH=${rawHeight.toFixed(4)}`);
+      console.log(`[Enemy] realHeight=${realHeight.toFixed(2)} finalScale=${finalScale.toFixed(6)}`);
 
       model.scale.setScalar(finalScale);
       model.updateMatrixWorld(true);
@@ -232,9 +237,9 @@ export class Enemy {
       const bbox       = new THREE.Box3().setFromObject(model);
       const modelH     = bbox.max.y - bbox.min.y;
       const footOffset = isFinite(bbox.min.y) ? -bbox.min.y : 0;
-      console.log(`BBOX: min.y=${bbox.min.y.toFixed(2)} max.y=${bbox.max.y.toFixed(2)} modelH=${modelH.toFixed(2)} footOffset=${footOffset.toFixed(2)}`);
       model.position.set(0, footOffset, 0);
 
+      console.log(`[Enemy] modelH=${modelH.toFixed(4)} footOffset=${footOffset.toFixed(4)}`);
       this.hpBarYOffset = modelH + modelH * 0.12;
 
       model.traverse((n) => {
@@ -560,4 +565,5 @@ export class EnemyManager {
     this.enemies.forEach((e) => e.dispose());
     this.enemies = [];
   }
-        }
+      }
+    
