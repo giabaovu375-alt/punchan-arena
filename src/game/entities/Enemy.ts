@@ -232,6 +232,7 @@ export class Enemy {
       const bbox       = new THREE.Box3().setFromObject(model);
       const modelH     = bbox.max.y - bbox.min.y;
       const footOffset = isFinite(bbox.min.y) ? -bbox.min.y : 0;
+      console.log(`BBOX: min.y=${bbox.min.y.toFixed(2)} max.y=${bbox.max.y.toFixed(2)} modelH=${modelH.toFixed(2)} footOffset=${footOffset.toFixed(2)}`);
       model.position.set(0, footOffset, 0);
 
       this.hpBarYOffset = modelH + modelH * 0.12;
