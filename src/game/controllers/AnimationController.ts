@@ -18,10 +18,10 @@ export interface SetupResult {
 // ── Tuning constants (AAA-style) ────────────────────────────────────────────
 const FADE = {
   idle:         0.25,
-  locomotion:   0.18,   // walk ↔ run
-  toAttack:     0.06,   // very snappy entry
-  comboChain:   0.05,   // almost instant chain
-  exitAttack:   0.18,   // smooth return to idle/walk
+  locomotion:   0.18,
+  toAttack:     0.06,
+  comboChain:   0.05,
+  exitAttack:   0.28,   // 0.18 → 0.28 smoother return
   jump:         0.12,
   death:        0.1,
   gettingUp:    0.15,
@@ -30,7 +30,7 @@ const FADE = {
 /** Fraction of clip duration that must pass before a combo input is accepted */
 const COMBO_WINDOW_FRACTION = 0.45;
 
-/** Attackcooldown after the finished-event fires (prevent double-tap spam) */
+/** Attack cooldown after the finished-event fires (prevent double-tap spam) */
 const POST_ATTACK_COOLDOWN = 0.12;
 
 export class AnimationController {
@@ -45,7 +45,7 @@ export class AnimationController {
   // ── Attack state ──────────────────────────────────────────────────────────
   private isAttacking     = false;
   private attackCooldown  = 0;
-  private comboWindowOpen = false;   // true once past COMBO_WINDOW_FRACTION
+  private comboWindowOpen = false;
 
   // ── Combo ─────────────────────────────────────────────────────────────────
   private comboCount    = 0;
@@ -113,7 +113,6 @@ export class AnimationController {
       const src = clips[key];
       if (!src) continue;
 
-      // Strip root-motion position tracks & filter to model bones
       const tracks = src.tracks
         .filter(t => nodeNames.has(t.name.split(".")[0]))
         .filter(t => {
@@ -126,12 +125,9 @@ export class AnimationController {
 
       if (tracks.length === 0) continue;
 
-      // ── Duration fix: ONLY retime if clip is suspiciously long (>30 s).
-      //    Old threshold of 10 s was too aggressive and mutilated normal clips.
-      //    We retime to 2× the "natural" frame-rate guess instead of a flat "2 s".
       let dur = src.duration;
       if (dur > 30) {
-        const scale = dur / 3; // bring absurdly long clips down to ~3 s
+        const scale = dur / 3;
         tracks.forEach(t => {
           const times = (t as any).times as Float32Array;
           for (let i = 0; i < times.length; i++) times[i] /= scale;
@@ -146,7 +142,7 @@ export class AnimationController {
 
       if (COMBAT_ANIMS.has(key) || key === "jump") {
         action.setLoop(THREE.LoopOnce, 1);
-        action.clampWhenFinished = true;
+        action.clampWhenFinished = false; // ← false để không giữ frame cuối
       }
 
       this.actions[key]      = action;
@@ -169,13 +165,16 @@ export class AnimationController {
         if (this.pendingCombo) {
           const next        = this.pendingCombo;
           this.pendingCombo = null;
-          // Stay isAttacking = true, reset window
           this.comboWindowOpen = false;
           this._playAttack(next);
           return;
         }
 
-        // Unlock
+        // ── FIX: tắt hẳn action cũ trước khi về idle ──────────────────────
+        e.action.stop();
+        e.action.enabled = false;
+        e.action.setEffectiveWeight(0);
+
         this.isAttacking     = false;
         this.comboWindowOpen = false;
         this.attackCooldown  = POST_ATTACK_COOLDOWN;
@@ -201,7 +200,6 @@ export class AnimationController {
       this.currentKey    = startKey;
     }
 
-    // Warm up the mixer (avoids first-frame T-pose)
     this.mixer.update(0);
     this.mixer.update(0.001);
     this.mixer.update(0.001);
@@ -231,6 +229,7 @@ export class AnimationController {
       if (prev && prev !== next) {
         prev.stop();
         prev.enabled = false;
+        prev.setEffectiveWeight(0); // ← FIX: reset weight hẳn
       }
       next.reset();
       next.enabled = true;
@@ -249,9 +248,7 @@ export class AnimationController {
     if (this.attackCooldown > 0) return;
 
     if (this.isAttacking) {
-      // Only accept combo input when we're past the combo window
       if (!this.comboWindowOpen) return;
-
       const next = COMBO_CHAIN[this.currentKey];
       if (next && this.actions[next] && !this.pendingCombo) {
         this.pendingCombo = next;
@@ -263,7 +260,6 @@ export class AnimationController {
     this.comboWindowOpen = false;
     this.pendingCombo    = null;
 
-    // comboCount incremented ONLY here (not in _playAttack)
     this.comboCount = Math.min(this.comboCount + 1, 999);
     this.comboTimer = 2.0;
     this.cb.onComboChanged?.(this.comboCount);
@@ -271,7 +267,6 @@ export class AnimationController {
     this._playAttack(key);
   }
 
-  /** Internal: plays attack anim; does NOT touch comboCount */
   private _playAttack(key: AnimKey) {
     const action = this.actions[key];
     if (!action) return;
@@ -304,7 +299,6 @@ export class AnimationController {
       }
     }
 
-    // ── Open combo window based on clip progress ───────────────────────────
     if (this.isAttacking && !this.comboWindowOpen && this.currentAction) {
       const dur = this.clipDurations[this.currentKey] ?? 0;
       if (dur > 0) {
@@ -336,4 +330,4 @@ export class AnimationController {
   }
 
   getMixer() { return this.mixer; }
-        }
+}
