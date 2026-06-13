@@ -571,4 +571,14 @@ export class EnemyManager {
   update(dt: number, playerPos: THREE.Vector3, camera: THREE.Camera): number {
     let total = 0;
     for (const e of this.enemies) {
-      total += e.update(dt, pla
+      total += e.update(dt, playerPos, camera);
+    }
+    this.enemies = this.enemies.filter((e) => !e.disposed);
+    return total;
+  }
+
+  disposeAll() {
+    for (const e of this.enemies) e.dispose();
+    this.enemies = [];
+  }
+}
