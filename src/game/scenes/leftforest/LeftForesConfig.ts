@@ -39,20 +39,20 @@ export const CFG = {
   EMBER_COUNT:       180,
 
   MODEL_SCALE: {
-    outerTreeH:  22,
-    outerTreeJ:  6,
-    midTreeH:    13,
-    midTreeJ:    6,
-    underH:      1.1,
-    underJ:      1.2,
-    rockH:       0.9,
-    rockJ:       1.4,
-    skulls:      2.0,
-    fence:       2.8,
-    statue:      7.5,
-    bigStone:    6.5,
-    grass:       0.55,
-  },
+  outerTreeH:  8,    // 22 → 8
+  outerTreeJ:  3,    // 6  → 3
+  midTreeH:    5,    // 13 → 5
+  midTreeJ:    2,    // 6  → 2
+  underH:      0.6,  // 1.1 → 0.6
+  underJ:      0.5,  // 1.2 → 0.5
+  rockH:       0.8,  // giữ
+  rockJ:       0.6,
+  skulls:      0.8,  // 2.0 → 0.8
+  fence:       2.2,  // giữ
+  statue:      3.5,  // 7.5 → 3.5
+  bigStone:    2.5,  // 6.5 → 2.5
+  grass:       0.4,  // 0.55 → 0.4
+},
 } as const;
 
 export function inClearPath(x: number, z: number): boolean {
